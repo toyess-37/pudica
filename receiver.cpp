@@ -27,7 +27,7 @@ int main() {
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
 
   // error handling
-  if (fd < 0) panic("socket fail");
+  if (fd < 0) panic("[receiver] socket fail");
 
   // bind addr
   sockaddr_in addr{};
@@ -51,13 +51,13 @@ int main() {
     int n = recvfrom(fd, buf, 2048, 0, (sockaddr*)&cli, &len);
 
     if (n < 0) {
-      cerr << "recv error: " << strerror(errno) << "\n";
+      cerr << "[receiver] recv error: " << strerror(errno) << "\n";
       continue;
     }
 
     if (n > 0) {
       if (n < sizeof(Header)) {
-        cerr << "small packet\n";
+        cerr << "[receiver] small packet\n";
         continue;
       }
 
@@ -65,7 +65,7 @@ int main() {
       h->ts_recv = now();
       int s = sendto(fd, buf, n, 0, (sockaddr *)&cli, len);
       if (s < 0) {
-        cerr << "send error: " << strerror(errno) << "\n";
+        cerr << "[receiver] send error: " << strerror(errno) << "\n";
         continue;
       };
     }
