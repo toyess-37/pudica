@@ -5,10 +5,10 @@
 
 struct __attribute__((packed))
 Header {
-  uint32_t seq; // sequence no.
+  uint32_t seq;      // sequence no.
   uint32_t frame_id; // frame id
-  uint64_t ts_sent; // send time
-  uint64_t ts_recv; // receive time
+  uint64_t ts_sent;  // send time
+  uint64_t ts_recv;  // receive time
 };
 
 // 60 FPS
