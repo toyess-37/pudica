@@ -31,6 +31,7 @@ void panic(const char* msg) {
 // current status of the pipe
 struct State {
   atomic<double> d_min{1e9};
+  atomic<uint64_t> last_dmin{0}; // last update of dmin
   atomic<double> bur{0.0};
   atomic<int> pacing_delay{50};
 };
@@ -41,7 +42,14 @@ State st;
 void listen_thread(int fd) {
   char buf[2048];
   
-  while(true) {
+  while(1) {
+    uint64_t current_time = now();
+    uint64_t last_update = st.last_dmin.load();
+
+    if (current_time - last_update > 1000000000ULL) {
+      st.d_min.store(1e9);
+    }
+
     int n = recv(fd, buf, sizeof(buf), 0);
 
     if (n < 0) {
@@ -60,12 +68,10 @@ void listen_thread(int fd) {
       double delay =(double)(h->ts_recv - h->ts_sent);
 
       double cur = st.d_min.load();
-
       if (delay < cur) st.d_min.store(delay);
 
       double L = 16666666.0;
       double b = (delay - st.d_min.load()) / L;
-
       st.bur.store(b);
     }
   }
@@ -76,7 +82,6 @@ struct Pkt {
   char data[LOAD_SZ];
 };
 
-// timing wheel
 deque<Pkt> wheel;
 mutex wheel_mx;
 
@@ -99,7 +104,7 @@ void pacer_thread(int fd, sockaddr_in dst) {
       }
       wheel_mx.lock();
       int sleep_time = st.pacing_delay.load();
-      usleep(sleep_time);
+      if (sleep_time > 0) usleep(sleep_time);
     }
     wheel_mx.unlock();
       
@@ -154,7 +159,7 @@ int main() {
     int n_pkts = bytes/LOAD_SZ;
     if(n_pkts<1) n_pkts=1;
 
-    double total_time = 16666.0; // microseconds
+    double total_time = 16666.66; // microseconds
     int gap = (int)((total_time / n_pkts) / m);
     st.pacing_delay.store(gap);
 
@@ -171,13 +176,10 @@ int main() {
       push_back(p);
     }
     wheel_mx.unlock();
-
     frame_id++;
 
     auto t_end = steady_clock::now();
-        
     auto elap = duration_cast<microseconds>(t_end-t_start).count();
-
     if (elap < INTERVAL) usleep(INTERVAL - elap);
   }
 
