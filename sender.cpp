@@ -32,6 +32,7 @@ void panic(const char* msg) {
 struct State {
   atomic<double> d_min{1e9};
   atomic<double> bur{0.0};
+  atomic<int> pacing_delay{50};
 };
 
 State st;
@@ -97,8 +98,8 @@ void pacer_thread(int fd, sockaddr_in dst) {
         continue;
       }
       wheel_mx.lock();
-      
-      usleep(50);
+      int sleep_time = st.pacing_delay.load();
+      usleep(sleep_time);
     }
     wheel_mx.unlock();
       
@@ -151,8 +152,11 @@ int main() {
     double bits = (rate * 1e6) * 0.01666;
     int bytes = (int)(bits / 8);
     int n_pkts = bytes/LOAD_SZ;
-        
     if(n_pkts<1) n_pkts=1;
+
+    double total_time = 16666.0; // microseconds
+    int gap = (int)((total_time / n_pkts) / m);
+    st.pacing_delay.store(gap);
 
     wheel_mx.lock();
     // send packets
