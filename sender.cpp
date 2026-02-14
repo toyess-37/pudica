@@ -22,7 +22,7 @@ uint64_t now() {
   return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-// panic for error
+// panic for error messages
 void panic(const char* msg) {
   perror(msg);
   exit(1);
@@ -46,7 +46,7 @@ void listen_thread(int fd) {
     uint64_t current_time = now();
     uint64_t last_update = st.last_dmin.load();
 
-    if (current_time - last_update > 1000000000ULL) {
+    if (current_time - last_update > 10000000000ULL) {
       st.d_min.store(1e9);
     }
 
