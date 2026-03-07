@@ -22,7 +22,16 @@ void panic(const char* msg) {
   exit(1);
 }
 
+// for calculating recv rate
+auto last_calc = now();
+uint32_t bytes_accumulated = 0;
+double current_recv_rate = 0.0; // in Mbps
+
 int main(int argc, char *argv[]) {
+  if (argc != 2) {
+    cerr << "Usage: " << argv[0] << " <port>\n";
+    return 1;
+  }
   int port = std::stoi(argv[1]);
 
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -50,23 +59,29 @@ int main(int argc, char *argv[]) {
     }
 
     auto recv_ts = now();
+    bytes_accumulated += n;
+    uint64_t elapsed_time = recv_ts - last_calc;
+
+    if (elapsed_time >= 100000) { // after 100ms redo the rate calculation
+      current_recv_rate = (8.0*bytes_accumulated)/elapsed_time;
+      bytes_accumulated = 0;
+      last_calc = recv_ts;
+    }
 
     if (n < sizeof(PktHeader)) {
       cerr << "[receiver] small packet\n";
       continue;
     }
 
-    PktHeader* header;
+    PktHeader header;
     memcpy(&header, buf, sizeof(PktHeader));
 
     RecvACK ack{};
-    ack.echoed_send = header->send_time;
+    ack.echoed_send = header.send_time;
     ack.recv_time = recv_ts;
-    ack.frame_id = header->frame_id;
-    ack.packet_id = header->packet_id;
-
-    // TODO
-    ack.rate = 0.0;
+    ack.frame_id = header.frame_id;
+    ack.packet_id = header.packet_id;
+    ack.rate = current_recv_rate;
 
     int s = sendto(sock, &ack, sizeof(RecvACK), 0, (sockaddr*)&client_addr, len);
     if (s < 0) {
