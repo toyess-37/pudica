@@ -17,6 +17,7 @@ constexpr uint64_t INTERVAL = 16666; // 60 FPS
   remaining payload, for safety set at 1400
 */
 constexpr uint32_t LOAD_SZ = 1400;
+constexpr uint32_t MAX_RECV_BUF = 2048;
 
 struct PktHeader {
   uint64_t send_time;   // t_0
