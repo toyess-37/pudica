@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
   if (bind(sock, (sockaddr*)&server_addr, sizeof(server_addr)) < 0)
     panic("[receiver] bind fail");
   
-  cout << "Receiver on " << server_addr.sin_port << "\n";
+  cout << "Receiver on " << port << "\n";
 
   uint8_t buf[MAX_RECV_BUF];
   sockaddr_in client_addr{};
