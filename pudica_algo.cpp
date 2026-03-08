@@ -5,7 +5,7 @@
 #include <deque>
 
 namespace PudicaAlgorithm {
-  static double raw_BUR(double D_sec, double D_min_sec) {
+  double raw_BUR(double D_sec, double D_min_sec) {
     return (D_sec - D_min_sec) / L_SEC;
   }
 
