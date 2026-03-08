@@ -56,7 +56,7 @@ void tx_loop(int sock, sockaddr_in client_addr) {
     uint32_t frame_bytes = (bitrate * 1000.0 * 125.0) / 60.0;
     uint32_t total_packets = (frame_bytes / LOAD_SZ) + 1;
 
-    // sensible period = L / p
+    // sensible period = L/p
     double sensible_period = INTERVAL / p;
     double packet_interval = sensible_period / total_packets;
 
