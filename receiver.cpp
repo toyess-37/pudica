@@ -47,7 +47,7 @@ int main(int argc, char *argv[]) {
   
   cout << "Receiver on " << port << "\n";
 
-  uint8_t buf[MAX_RECV_BUF];
+  uint8_t buf[MAX_BUF];
   sockaddr_in client_addr{};
   socklen_t len = sizeof(client_addr);
 
@@ -82,6 +82,7 @@ int main(int argc, char *argv[]) {
     ack.frame_id = header.frame_id;
     ack.packet_id = header.packet_id;
     ack.rate = current_recv_rate;
+    ack.flags = header.flags;
 
     int s = sendto(sock, &ack, sizeof(RecvACK), 0, (sockaddr*)&client_addr, len);
     if (s < 0) {
