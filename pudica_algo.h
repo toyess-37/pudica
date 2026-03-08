@@ -20,5 +20,5 @@ namespace PudicaAlgorithm
   double pacing_multiplier(double R);
   double corrected_BUR(double raw_BUR, const std::vector<double>& probe_delays_T);
   double smoothed_BUR(const std::deque<HistorySample> &history, double current_B);
-  double calculate_next_bitrate(double current_B, double R_tilde, double tau_frames);
+  double calculate_next_bitrate(double current_B, double R_tilde, double frames);
 }
