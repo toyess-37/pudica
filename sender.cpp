@@ -1,187 +1,206 @@
 #include <iostream>
 #include <cstring>
-#include <cerrno>
-#include <cstdlib>
-#include <thread>
+#include <map>
 #include <vector>
 #include <deque>
-#include <mutex>
-#include <cmath>
+
+#include <thread>
 #include <atomic>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+#include <mutex>
 #include <chrono>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #include "protocol.h"
+#include "pudica_algo.h"
 
 using namespace std;
 using namespace std::chrono;
 
-// time in nanoseconds
 uint64_t now() {
-  return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+  return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-// panic for error messages
-void panic(const char* msg) {
+void panic(const char *msg) {
   perror(msg);
   exit(1);
 }
 
-// current status of the pipe
-struct State {
-  atomic<double> d_min{1e9};
-  atomic<uint64_t> last_dmin{0}; // last update of dmin
-  atomic<double> bur{0.0};
-  atomic<int> pacing_delay{50};
+struct PudicaState {
+  mutex history_mutex;
+  atomic<double> current_bitrate{50.0};     // in Mbps
+  atomic<double> pacing_multiplier_p{1.25}; // pacing multiplier p
+  atomic<double> fallback_rate_mbps{0.0};
+  atomic<uint64_t> d_min{UINT64_MAX};
+
+  uint32_t frames = 0;
+
+  // queue draining flag for BUR > 1 stages
+  atomic<bool> is_draining{false};
+
+  // Sliding window of past 200ms
+  deque<PudicaAlgorithm::HistorySample> history;
 };
 
-State st;
+PudicaState global_state;
 
-// to measure the Bandwidth Utilization ratio
-void listen_thread(int fd) {
-  char buf[2048];
-  
-  while(1) {
-    uint64_t current_time = now();
-    uint64_t last_update = st.last_dmin.load();
+void pacer_thread(int sock, sockaddr_in client_addr) {
+  socklen_t client_len = sizeof(client_addr);
+  uint32_t current_frame_id = 1;
 
-    if (current_time - last_update > 10000000000ULL) {
-      st.d_min.store(1e9);
+  while (true) {
+    auto frame_start_time = steady_clock::now();
+
+    double bitrate = global_state.current_bitrate.load(); // current bitrate
+    double p = global_state.pacing_multiplier_p.load();
+
+    // frame size in packets [ 10^6 / 8 = 125 * 10^3 ]
+    uint32_t frame_bytes = (bitrate * 1000.0 * 125.0) / 60.0;
+    uint32_t total_packets = (frame_bytes / LOAD_SZ) + 1;
+
+    // sensible period = L/p
+    double sensible_period = INTERVAL / p;
+    double packet_interval = sensible_period / total_packets;
+
+    // send frames' packets
+    for (uint32_t id = 0; id < total_packets; id++) {
+      PktHeader header{};
+      header.frame_id = current_frame_id;
+      header.packet_id = id;
+      header.send_time = now();
+
+      if (id == 0)
+        header.flags |= IS_FIRST;
+      if (id == total_packets - 1)
+        header.flags |= IS_LAST;
+
+      // dummy payload and send
+      uint8_t buffer[LOAD_SZ] = {0};
+      memcpy(buffer, &header, sizeof(PktHeader));
+      sendto(sock, buffer, sizeof(buffer), 0, (sockaddr *)&client_addr, client_len);
+
+      std::this_thread::sleep_for(microseconds(static_cast<int>(packet_interval)));
     }
 
-    int n = recv(fd, buf, sizeof(buf), 0);
+    // agnostic period probes
+    double agnostic_period = INTERVAL - sensible_period;
+    double probe_interval = agnostic_period/5.0;
 
-    if (n < 0) {
-      cerr << "[sender] recv err: " << strerror(errno) << "\n";
-      continue;
-    }
+    for (uint32_t i=0; i<4; i++) {
+      std::this_thread::sleep_for(microseconds(static_cast<int>(probe_interval)));
 
-    if (n > 0) {
-      if (n < sizeof(Header)) {
-        cerr << "[sender] small packet\n";
-        continue;
-      }
+      PktHeader probe_hdr{};
+      probe_hdr.frame_id = current_frame_id;
+      probe_hdr.packet_id = UINT64_MAX - i; // high id so that it does not get confused with data packets
+      probe_hdr.flags = IS_PROBE;
+      probe_hdr.send_time = now();
 
-      Header* h = (Header*)buf;
-
-      double delay =(double)(h->ts_recv - h->ts_sent);
-
-      double cur = st.d_min.load();
-      if (delay < cur) st.d_min.store(delay);
-
-      double L = 16666666.0;
-      double b = (delay - st.d_min.load()) / L;
-      st.bur.store(b);
-    }
-  }
-}
-
-struct Pkt {
-  Header h;
-  char data[LOAD_SZ];
-};
-
-deque<Pkt> wheel;
-mutex wheel_mx;
-
-void pacer_thread(int fd, sockaddr_in dst) {
-  auto tick = microseconds(1000);
-
-  while(1) {
-    wheel_mx.lock();
-      
-    while(!wheel.empty()) {
-      Pkt p = wheel.front();
-          
-      wheel.pop_front();
-      wheel_mx.unlock();
-
-      int s = sendto(fd, &p.h, sizeof(p.h) + LOAD_SZ, 0, (sockaddr*)&dst, sizeof(dst));
+      int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr *)&client_addr, client_len);
       if (s<0) {
         cerr << "[sender] send err: " << strerror(errno) << "\n";
         continue;
       }
-      wheel_mx.lock();
-      int sleep_time = st.pacing_delay.load();
-      if (sleep_time > 0) usleep(sleep_time);
     }
-    wheel_mx.unlock();
-      
-    this_thread::sleep_for(tick);
+
+    // sleep until the next 16.67ms
+    current_frame_id++;
+    std::this_thread::sleep_until(frame_start_time + microseconds(INTERVAL));
   }
 }
 
-int main() {
-  // socket
-  int fd = socket(AF_INET, SOCK_DGRAM, 0);
+// to measure the Bandwidth Utilization Ratio
+void listener_thread(int sock) {
+  uint8_t buf[MAX_BUF];
+  int congested_frames = 0;
 
-  // error handling
-  if (fd < 0) panic("[sender] socket fail");
+  struct FrameProgress {
+    double frame_D_sec = 0;
+    vector<double> probe_delays;
+  };
+  map<uint32_t, FrameProgress> in_flight_frames;
 
-  sockaddr_in dst{};
-  dst.sin_family = AF_INET;
-  dst.sin_port = htons(8080);
+  while(true) {
+    ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
+    if (n < sizeof(RecvACK)) continue;
+
+    RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
+    uint32_t fid = ack->frame_id;
+
+    // one-way delay (microseconds) and Dmin
+    uint64_t one_way_delay = ack->recv_time - ack->echoed_send;
+    if (one_way_delay < global_state.d_min.load())
+      global_state.d_min.store(one_way_delay);
+
+    double current_Dmin = global_state.d_min.load() / 1000000.0; // in secs
+    double pkt_D = one_way_delay / 1000000.0; // in sec
+
+    bool is_probe = (ack->flags & IS_PROBE);
+    bool is_last  = (ack->flags & IS_LAST);
     
-  int ret = inet_pton(AF_INET, "127.0.0.1", &dst.sin_addr);
-  if (ret <= 0) panic("[sender] inet_pton");
-
-  // Launch Threads
-  try {
-    thread t1(listen_thread,fd);
-    thread t2(pacer_thread,fd,dst);
-    
-    t1.detach();
-    t2.detach();
-  } catch (...) {
-    panic("[sender] thread fail");
-  }
-
-  uint32_t frame_id = 0;
-  double rate = 10.0;
-
-  while(1) { // simulating 60 fps game
-    auto t_start = steady_clock::now();
-
-    double r = st.bur.load();
-
-    // Logic of algorithm
-    if (r <= 0.85) { rate *= 1.05; } 
-    else if (r <= 1.0) { rate += 0.1; } 
-    else { rate *= 0.7; }
-
-    if(rate>50) rate=50;
-    if(rate<1) rate=1;
-    
-    double m = 1.25 / min(r, 1.0);
-    double bits = (rate * 1e6) * 0.01666;
-    int bytes = (int)(bits / 8);
-    int n_pkts = bytes/LOAD_SZ;
-    if(n_pkts<1) n_pkts=1;
-
-    double total_time = 16666.66; // microseconds
-    int gap = (int)((total_time / n_pkts) / m);
-    st.pacing_delay.store(gap);
-
-    wheel_mx.lock();
-    // send packets
-    for(int i=0; i<n_pkts; i++) {     
-      Pkt p;
-      p.h.seq = i;
-      p.h.frame_id = frame_id;
-      p.h.ts_sent =
-      now();
-      
-      wheel.
-      push_back(p);
+    if (is_probe) {
+      double T_i = pkt_D - current_Dmin;
+      if (T_i > 0) in_flight_frames[fid].probe_delays.push_back(T_i);
+    } else if (is_last) {
+      in_flight_frames[fid].frame_D_sec = pkt_D;
     }
-    wheel_mx.unlock();
-    frame_id++;
 
-    auto t_end = steady_clock::now();
-    auto elap = duration_cast<microseconds>(t_end-t_start).count();
-    if (elap < INTERVAL) usleep(INTERVAL - elap);
+    if (in_flight_frames[fid].frame_D_sec > 0 && in_flight_frames[fid].probe_delays.size() == 4) {
+      // Calculate BUR
+      double raw_R = PudicaAlgorithm::raw_BUR(in_flight_frames[fid].frame_D_sec, current_Dmin);
+      double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, in_flight_frames[fid].probe_delays);
+
+      // Update Pacing Multiplier
+      global_state.pacing_multiplier_p.store(PudicaAlgorithm::pacing_multiplier(R_corrected));
+
+      // Short-term Reactions
+      if (R_corrected > 1.0) {
+        congested_frames++;
+        if (congested_frames >= 3)
+          global_state.current_bitrate.store(ack->rate); // Active draining
+        else
+          global_state.current_bitrate.store(global_state.current_bitrate.load() * 0.85); // 15% fallback
+      } else congested_frames = 0;
+
+      // Long-term AI-MD History Update
+      lock_guard<mutex> lock(global_state.history_mutex);
+      global_state.history.push_back({R_corrected, global_state.current_bitrate.load()});
+      if (global_state.history.size() > 12) global_state.history.pop_front();
+
+      double R_tilde = PudicaAlgorithm::smoothed_BUR(global_state.history, global_state.current_bitrate.load());
+      global_state.frames++;
+      double next_B = PudicaAlgorithm::calculate_next_bitrate(global_state.current_bitrate.load(), R_tilde, global_state.frames);
+      
+      global_state.current_bitrate.store(next_B);
+      in_flight_frames.erase(fid);
+    }
   }
+}
+
+int main(int argc, char* argv[]) {
+  if (argc != 3) {
+    cerr << "Usage: " << argv[0] << " <ip> <port>\n";
+    return 1;
+  }
+  string ip = argv[1];
+  int port = stoi(argv[2]);
+
+  int sock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (sock < 0) panic("[sender] socket fail");
+
+  sockaddr_in dest{};
+  dest.sin_family = AF_INET;
+  dest.sin_port = htons(port);
+
+  if (inet_pton(AF_INET, ip.c_str(), &dest.sin_addr) <= 0) {
+    panic("[sender] Invalid IP address format");
+  }
+
+  thread t1(pacer_thread, sock, dest);
+  thread t2(listener_thread, sock);
+
+  t1.join();
+  t2.join();
 
   return 0;
 }

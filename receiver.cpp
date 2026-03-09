@@ -32,7 +32,7 @@ int main(int argc, char *argv[]) {
     cerr << "Usage: " << argv[0] << " <port>\n";
     return 1;
   }
-  int port = std::stoi(argv[1]);
+  int port = stoi(argv[1]);
 
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
   if (sock < 0) panic("[receiver] socket creation failed");
