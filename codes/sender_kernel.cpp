@@ -81,7 +81,8 @@ void pacer_thread(int sock, sockaddr_in client_addr) {
   uint32_t current_frame_id = 1;
 
   while (true) {
-    uint64_t frame_start_time = now();
+    auto loop_start = steady_clock::now(); // this uses standard steady_clock
+    uint64_t frame_start_time = now(); // this uses CLOCK_MONOTONIC
 
     double bitrate = global_state.current_bitrate.load(); // current bitrate
     double p = global_state.pacing_multiplier_p.load();
@@ -127,19 +128,13 @@ void pacer_thread(int sock, sockaddr_in client_addr) {
       probe_hdr.flags = IS_PROBE;
       probe_hdr.send_time = probe_time / 1000;
 
-      int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr *)&client_addr, client_len);
-      if (s<0) {
-        cerr << "[sender] send err: " << strerror(errno) << "\n";
-        continue;
-      }
-
       send_with_txtime(sock, client_addr, reinterpret_cast<uint8_t*>(&probe_hdr), sizeof(PktHeader), probe_time);
     }
 
     // sleep until the next 16.67ms
     current_frame_id++;
     this_thread::sleep_until(
-      time_point<steady_clock>(nanoseconds(frame_start_time + interval_ns))
+      time_point<steady_clock>(loop_start + nanoseconds(interval_ns))
     );
   }
 }
@@ -161,6 +156,7 @@ void listener_thread(int sock) {
 
     RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
     uint32_t fid = ack->frame_id;
+    if (fid > 5) in_flight_frames.erase(fid - 5);
 
     // one-way delay (microseconds) and Dmin
     uint64_t one_way_delay = ack->recv_time - ack->echoed_send;
