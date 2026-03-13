@@ -126,6 +126,7 @@ void listener_thread(int sock) {
 
     RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
     uint32_t fid = ack->frame_id;
+    if (fid > 5) in_flight_frames.erase(fid - 5);
 
     // one-way delay (microseconds) and Dmin
     uint64_t one_way_delay = ack->recv_time - ack->echoed_send;
