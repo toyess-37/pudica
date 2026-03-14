@@ -157,25 +157,26 @@ void listener_thread(int sock) {
       // Update Pacing Multiplier
       global_state.pacing_multiplier_p.store(PudicaAlgorithm::pacing_multiplier(R_corrected));
 
+      {
+        // Long-term AI-MD History Update
+        lock_guard<mutex> lock(global_state.history_mutex);
+        global_state.history.push_back({R_corrected, global_state.current_bitrate.load()});
+        if (global_state.history.size() > 12) global_state.history.pop_front();
+      }
+
       // Short-term Reactions
       if (R_corrected > 1.0) {
         congested_frames++;
-        if (congested_frames >= 3)
-          global_state.current_bitrate.store(ack->rate); // Active draining
-        else
-          global_state.current_bitrate.store(global_state.current_bitrate.load() * 0.85); // 15% fallback
-      } else congested_frames = 0;
+        if (congested_frames >= 3) global_state.current_bitrate.store(ack->rate); // Active draining
+        else global_state.current_bitrate.store(global_state.current_bitrate.load() * 0.85); // 15% fallback
+      } else {
+        congested_frames = 0;
+        double R_tilde = PudicaAlgorithm::smoothed_BUR(global_state.history, global_state.current_bitrate.load());
+        global_state.frames++;
+        double next_B = PudicaAlgorithm::calculate_next_bitrate(global_state.current_bitrate.load(), R_tilde, global_state.frames);
+        global_state.current_bitrate.store(next_B);
+      }
 
-      // Long-term AI-MD History Update
-      lock_guard<mutex> lock(global_state.history_mutex);
-      global_state.history.push_back({R_corrected, global_state.current_bitrate.load()});
-      if (global_state.history.size() > 12) global_state.history.pop_front();
-
-      double R_tilde = PudicaAlgorithm::smoothed_BUR(global_state.history, global_state.current_bitrate.load());
-      global_state.frames++;
-      double next_B = PudicaAlgorithm::calculate_next_bitrate(global_state.current_bitrate.load(), R_tilde, global_state.frames);
-      
-      global_state.current_bitrate.store(next_B);
       in_flight_frames.erase(fid);
     }
   }
