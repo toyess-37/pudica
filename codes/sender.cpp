@@ -32,7 +32,7 @@ struct PudicaState {
   atomic<double> current_bitrate{50.0};     // in Mbps
   atomic<double> pacing_multiplier_p{1.25}; // pacing multiplier p
   atomic<double> fallback_rate_mbps{0.0};
-  atomic<uint64_t> d_min{UINT64_MAX};
+  atomic<int64_t> d_min{INT64_MAX};
 
   uint32_t frames = 0;
 
@@ -116,6 +116,7 @@ void listener_thread(int sock) {
 
   struct FrameProgress {
     double frame_D_sec = 0;
+    bool has_last_packet = false;
     vector<double> probe_delays;
   };
   map<uint32_t, FrameProgress> in_flight_frames;
@@ -129,7 +130,7 @@ void listener_thread(int sock) {
     if (fid > 5) in_flight_frames.erase(fid - 5);
 
     // one-way delay (microseconds) and Dmin
-    uint64_t one_way_delay = ack->recv_time - ack->echoed_send;
+    int64_t one_way_delay = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
     if (one_way_delay < global_state.d_min.load())
       global_state.d_min.store(one_way_delay);
 
@@ -141,12 +142,14 @@ void listener_thread(int sock) {
     
     if (is_probe) {
       double T_i = pkt_D - current_Dmin;
-      if (T_i > 0) in_flight_frames[fid].probe_delays.push_back(T_i);
+      if (T_i < 0.0) T_i = 0.0;
+      in_flight_frames[fid].probe_delays.push_back(T_i);
     } else if (is_last) {
       in_flight_frames[fid].frame_D_sec = pkt_D;
+      in_flight_frames[fid].has_last_packet = true;
     }
 
-    if (in_flight_frames[fid].frame_D_sec > 0 && in_flight_frames[fid].probe_delays.size() == 4) {
+    if (in_flight_frames[fid].has_last_packet && in_flight_frames[fid].probe_delays.size() == 4) {
       // Calculate BUR
       double raw_R = PudicaAlgorithm::raw_BUR(in_flight_frames[fid].frame_D_sec, current_Dmin);
       double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, in_flight_frames[fid].probe_delays);
