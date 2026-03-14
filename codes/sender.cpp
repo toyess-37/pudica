@@ -153,6 +153,7 @@ void listener_thread(int sock) {
       // Calculate BUR
       double raw_R = PudicaAlgorithm::raw_BUR(in_flight_frames[fid].frame_D_sec, current_Dmin);
       double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, in_flight_frames[fid].probe_delays);
+      cout << "BUR: " << R_corrected<< " bitrate: " << global_state.current_bitrate.load()<< endl;
 
       // Update Pacing Multiplier
       global_state.pacing_multiplier_p.store(PudicaAlgorithm::pacing_multiplier(R_corrected));
