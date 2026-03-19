@@ -79,13 +79,14 @@ void pacer_thread(int sock, sockaddr_in client_addr) {
       uint8_t buffer[LOAD_SZ] = {0};
       memcpy(buffer, &header, sizeof(PktHeader));
       sendto(sock, buffer, sizeof(buffer), 0, (sockaddr *)&client_addr, client_len);
+      // cout << "[sender] sent packet " << id << " of frame " << current_frame_id << "\n";
 
       std::this_thread::sleep_for(microseconds(static_cast<int>(packet_interval)));
     }
 
     // agnostic period probes
     double agnostic_period = INTERVAL - sensible_period;
-    double probe_interval = agnostic_period/5.0;
+    double probe_interval = agnostic_period/(N_PROBE + 1);
 
     for (uint32_t i=0; i<N_PROBE; i++) {
       std::this_thread::sleep_for(microseconds(static_cast<int>(probe_interval)));
@@ -151,7 +152,7 @@ void listener_thread(int sock) {
       in_flight_frames[fid].has_last_packet = true;
     }
 
-    if (in_flight_frames[fid].has_last_packet && in_flight_frames[fid].probe_delays.size() == 4) {
+    if (in_flight_frames[fid].has_last_packet && in_flight_frames[fid].probe_delays.size() == N_PROBE) {
       // Calculate BUR
       double raw_R = PudicaAlgorithm::raw_BUR(in_flight_frames[fid].frame_D_sec, current_Dmin);
       double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, in_flight_frames[fid].probe_delays);

@@ -117,7 +117,7 @@ void pacer_thread(int sock, sockaddr_in client_addr) {
 
     // agnostic period probes
     double agnostic_period = interval_ns - sensible_period_ns;
-    double probe_interval = agnostic_period/5.0;
+    double probe_interval = agnostic_period/(N_PROBE+1);
 
     for (uint32_t i=0; i<N_PROBE; i++) {
       uint64_t probe_time = frame_start_time + sensible_period_ns + i*probe_interval;
@@ -180,7 +180,7 @@ void listener_thread(int sock) {
       in_flight_frames[fid].has_last_packet = true;
     }
 
-    if (in_flight_frames[fid].has_last_packet && in_flight_frames[fid].probe_delays.size() == 4) {
+    if (in_flight_frames[fid].has_last_packet && in_flight_frames[fid].probe_delays.size() == N_PROBE) {
       // Calculate BUR
       double raw_R = PudicaAlgorithm::raw_BUR(in_flight_frames[fid].frame_D_sec, current_Dmin);
       double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, in_flight_frames[fid].probe_delays);

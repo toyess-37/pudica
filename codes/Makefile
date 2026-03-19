@@ -6,8 +6,8 @@ RECEIVER = receiver
 
 all: $(SENDER) $(SENDER_KERN) $(RECEIVER)
 
-$(SENDER): sender_kernel.cpp pudica_algo.cpp protocol.h pudica_algo.h
-	$(CXX) $(CXXFLAGS) sender_kernel.cpp pudica_algo.cpp -o $(SENDER)
+$(SENDER): sender.cpp pudica_algo.cpp protocol.h pudica_algo.h
+	$(CXX) $(CXXFLAGS) sender.cpp pudica_algo.cpp -o $(SENDER)
 
 $(RECEIVER): receiver.cpp protocol.h
 	$(CXX) $(CXXFLAGS) receiver.cpp -o $(RECEIVER)

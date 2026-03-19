@@ -57,6 +57,7 @@ int main(int argc, char *argv[]) {
       cerr << "[receiver] recv error: " << strerror(errno) << "\n";
       continue;
     }
+    cout << "[receiver] got " << n << " bytes\n";
 
     auto recv_ts = now();
     bytes_accumulated += n;
