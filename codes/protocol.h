@@ -8,6 +8,8 @@ constexpr uint8_t IS_FIRST = 0x01;
 constexpr uint8_t IS_LAST  = 0x02;
 constexpr uint8_t IS_PROBE = 0x04;
 
+constexpr uint32_t N_PROBE = 4; // no. of probe packets
+
 constexpr uint64_t INTERVAL = 16666; // 60 FPS
 
 /*

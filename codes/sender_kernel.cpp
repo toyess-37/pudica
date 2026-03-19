@@ -119,12 +119,12 @@ void pacer_thread(int sock, sockaddr_in client_addr) {
     double agnostic_period = interval_ns - sensible_period_ns;
     double probe_interval = agnostic_period/5.0;
 
-    for (uint32_t i=0; i<4; i++) {
+    for (uint32_t i=0; i<N_PROBE; i++) {
       uint64_t probe_time = frame_start_time + sensible_period_ns + i*probe_interval;
 
       PktHeader probe_hdr{};
       probe_hdr.frame_id = current_frame_id;
-      probe_hdr.packet_id = UINT64_MAX - i; // high id so that it does not get confused with data packets
+      probe_hdr.packet_id = UINT32_MAX - i; // high id so that it does not get confused with data packets
       probe_hdr.flags = IS_PROBE;
       probe_hdr.send_time = probe_time / 1000;
 
@@ -157,7 +157,8 @@ void listener_thread(int sock) {
 
     RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
     uint32_t fid = ack->frame_id;
-    if (fid > 5) in_flight_frames.erase(fid - 5);
+    if (fid > 5) 
+      in_flight_frames.erase(in_flight_frames.begin(), in_flight_frames.lower_bound(fid-5));
 
     // one-way delay (microseconds) and Dmin
     int64_t one_way_delay = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
