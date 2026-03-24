@@ -59,7 +59,7 @@ public:
     socklen_t client_len = sizeof(client_addr);
 
     while(running) {
-      ssize_t n = recvfrom(sock, buf, sizeof(buf), MSG_DONTWAIT, (sockaddr*)&client_addr, &client_len);
+      ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, (sockaddr*)&client_addr, &client_len);
       if (n<0) {
         cerr << "[receiver] recv error: " << strerror(errno) << "\n";
         continue;

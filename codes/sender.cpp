@@ -43,7 +43,7 @@ private:
 
   atomic<double> bitrate{10.0};
   atomic<double> pace_p{1.25};
-  atomic<int> d_min{INT64_MAX};
+  atomic<int64_t> d_min{INT64_MAX};
 
   uint32_t frames_sent = 0;
 
