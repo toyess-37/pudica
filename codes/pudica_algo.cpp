@@ -58,7 +58,7 @@ namespace PudicaAlgorithm {
       double xi = GAMMA_MI * (((ALPHA + 1.0) / 2.0 - R_tilde) / R_tilde);
       new_B = current_B * (1.0 + xi);
     } else if (R_tilde <= 1.0) {
-      double safe_tau = std::min(frames, 300.0); // simultaneous AI-MD
+      double safe_tau = std::min(frames/60.0, 5.0); // simultaneous AI-MD
       // adaptive AI step (I)
       double I = (B_MAX + (std::pow(2.0, safe_tau) / std::max(std::log2(current_B), 1.0))) * (GAMMA_MD / 2.0);
       double A = I - (GAMMA_MD * current_B); // net step A

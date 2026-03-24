@@ -145,7 +145,9 @@ private:
       double pkt_D = owd / 1000000.0; // in sec
 
       if (ack->flags & IS_PROBE) {
-        double t_i = max(0.0, pkt_D - current_Dmin);
+        double T_bound = ((INTERVAL / 1000000.0) * 0.2) / (N_PROBE + 1);
+        double raw_T = max(0.0, pkt_D - current_Dmin);
+        double t_i = min(raw_T, T_bound);
         inflight[fid].probes.push_back(t_i);
       } else if (ack->flags & IS_LAST) {
         inflight[fid].frame_D_sec = pkt_D;
