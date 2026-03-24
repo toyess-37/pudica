@@ -120,7 +120,7 @@ void listener_thread(int sock) {
     bool has_last_packet = false;
     vector<double> probe_delays;
   };
-  map<uint32_t, FrameProgress> in_flight_frames;
+  map<uint32_t, FrameProgress> inflight;
 
   while(true) {
     ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
@@ -129,8 +129,7 @@ void listener_thread(int sock) {
     RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
     uint32_t fid = ack->frame_id;
     if (fid > 5) 
-      in_flight_frames.erase(in_flight_frames.begin(), in_flight_frames.lower_bound(fid-5));
-
+      inflight.erase(inflight.begin(), inflight.lower_bound(fid-5));
 
     // one-way delay (microseconds) and Dmin
     int64_t one_way_delay = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
@@ -146,16 +145,16 @@ void listener_thread(int sock) {
     if (is_probe) {
       double T_i = pkt_D - current_Dmin;
       if (T_i < 0.0) T_i = 0.0;
-      in_flight_frames[fid].probe_delays.push_back(T_i);
+      inflight[fid].probe_delays.push_back(T_i);
     } else if (is_last) {
-      in_flight_frames[fid].frame_D_sec = pkt_D;
-      in_flight_frames[fid].has_last_packet = true;
+      inflight[fid].frame_D_sec = pkt_D;
+      inflight[fid].has_last_packet = true;
     }
 
-    if (in_flight_frames[fid].has_last_packet && in_flight_frames[fid].probe_delays.size() == N_PROBE) {
+    if (inflight[fid].has_last_packet && inflight[fid].probe_delays.size() == N_PROBE) {
       // Calculate BUR
-      double raw_R = PudicaAlgorithm::raw_BUR(in_flight_frames[fid].frame_D_sec, current_Dmin);
-      double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, in_flight_frames[fid].probe_delays);
+      double raw_R = PudicaAlgorithm::raw_BUR(inflight[fid].frame_D_sec, current_Dmin);
+      double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, inflight[fid].probe_delays);
       cout << "BUR: " << R_corrected<< " bitrate: " << global_state.current_bitrate.load()<< endl;
 
       // Update Pacing Multiplier
@@ -181,7 +180,7 @@ void listener_thread(int sock) {
         global_state.current_bitrate.store(next_B);
       }
 
-      in_flight_frames.erase(fid);
+      inflight.erase(fid);
     }
   }
 }
