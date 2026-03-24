@@ -231,7 +231,7 @@ int main(int argc, char* argv[]) {
     sender.stop();
     cout << "[sender] exited.\n";
   } catch (const exception& e) {
-    cerr << "Error: " << e.what() << "\n";
+    cerr << "[sender] Error: " << e.what() << "\n";
     return 1;
   }
   return 0;
