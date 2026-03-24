@@ -23,26 +23,10 @@ uint64_t now() {
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-void panic(const char *msg) {
-  perror(msg);
-  exit(1);
-}
-
-// struct PudicaState {
-//   mutex history_mutex;
-//   atomic<double> current_bitrate{50.0};     // in Mbps
-//   atomic<double> pacing_multiplier_p{1.25}; // pacing multiplier p
-//   atomic<double> fallback_rate_mbps{0.0};
-//   atomic<int64_t> d_min{INT64_MAX};
-
-//   uint32_t frames = 0;
-
-//   // queue draining flag for BUR > 1 stages
-//   atomic<bool> is_draining{false};
-
-//   // Sliding window of past 200ms
-//   deque<PudicaAlgorithm::HistorySample> history;
-// };
+// void spin_sleep(double usec) {
+//   auto start = steady_clock::now();
+//   while (steady_clock::now() - start < microseconds(static_cast<int>(usec))) {}
+// }
 
 class PudicaSender {
 private:
