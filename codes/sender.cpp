@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 #include "protocol.h"
 #include "pudica_algo.h"
@@ -27,188 +28,211 @@ void panic(const char *msg) {
   exit(1);
 }
 
-struct PudicaState {
-  mutex history_mutex;
-  atomic<double> current_bitrate{50.0};     // in Mbps
-  atomic<double> pacing_multiplier_p{1.25}; // pacing multiplier p
-  atomic<double> fallback_rate_mbps{0.0};
-  atomic<int64_t> d_min{INT64_MAX};
+// struct PudicaState {
+//   mutex history_mutex;
+//   atomic<double> current_bitrate{50.0};     // in Mbps
+//   atomic<double> pacing_multiplier_p{1.25}; // pacing multiplier p
+//   atomic<double> fallback_rate_mbps{0.0};
+//   atomic<int64_t> d_min{INT64_MAX};
 
-  uint32_t frames = 0;
+//   uint32_t frames = 0;
 
-  // queue draining flag for BUR > 1 stages
-  atomic<bool> is_draining{false};
+//   // queue draining flag for BUR > 1 stages
+//   atomic<bool> is_draining{false};
 
-  // Sliding window of past 200ms
-  deque<PudicaAlgorithm::HistorySample> history;
+//   // Sliding window of past 200ms
+//   deque<PudicaAlgorithm::HistorySample> history;
+// };
+
+class PudicaSender {
+private:
+  int sock = -1;
+  sockaddr_in dest{};
+  socklen_t dest_len = sizeof(dest);
+
+  atomic<bool> running{false};
+  thread t_pacer;
+  thread t_listener;
+
+  mutex hist_mtx;
+  deque<PudicaAlgorithm::HistorySample> hist; // past 200ms sliding window
+
+  atomic<double> bitrate{10.0};
+  atomic<double> pace_p{1.25};
+  atomic<int> d_min{INT64_MAX};
+
+  uint32_t frames_sent = 0;
+
+  void pacer() {
+    uint32_t fid = 1; // frame id
+    while(running) {
+      auto t_start = steady_clock::now();
+
+      double rate = bitrate.load();
+      double p = pace_p.load();
+
+      uint32_t f_bytes = (rate * 1000.0 * 125.0)/60.0;
+      uint32_t pkts = (f_bytes/LOAD_SZ) + 1;
+
+      double sensible = INTERVAL/p;
+      double pkt_interval = sensible/pkts;
+
+      for (uint32_t id = 0; id < pkts && running; id++) {
+        PktHeader hdr{};
+        hdr.frame_id = fid;
+        hdr.packet_id = id;
+        hdr.send_time = now();
+
+        if (id==0) hdr.flags |= IS_FIRST;
+        if (id==pkts-1) hdr.flags |= IS_LAST;
+
+        uint8_t buf[LOAD_SZ] = {0};
+        memcpy(buf, &hdr, sizeof(PktHeader));
+        sendto(sock, buf, sizeof(buf), 0, (sockaddr*)&dest, dest_len);
+
+        this_thread::sleep_for(microseconds(static_cast<int>(pkt_interval)));
+      }
+
+      double agnostic = INTERVAL - sensible;
+      double probe_interval = agnostic/(N_PROBE + 1);
+
+      for (int i=0; i<N_PROBE && running; i++) {
+        this_thread::sleep_for(microseconds(static_cast<int>(probe_interval)));
+
+        PktHeader probe_hdr{};
+        probe_hdr.frame_id = fid;
+        probe_hdr.packet_id = UINT32_MAX - i; // high id so that it does not get confused with data packets
+        probe_hdr.flags = IS_PROBE;
+        probe_hdr.send_time = now();
+
+        int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr*)&dest, dest_len);
+        if (s<0) {
+          cerr << "[sender] send err: " << strerror(errno) << "\n";
+          continue;
+        }
+      }
+      
+      fid++;
+      this_thread::sleep_until(t_start + microseconds(INTERVAL));
+    }
+  }
+
+  void listener() {
+    uint8_t buf[MAX_BUF];
+    int congested_frames = 0;
+
+    struct FrameProgress {
+      double frame_D_sec = 0;
+      bool has_last = false;
+      vector<double> probes;
+    };
+    map<uint32_t, FrameProgress> inflight;
+
+    while(running) {
+      ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
+      if (n < sizeof(RecvACK)) continue;
+
+      RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
+      uint32_t fid = ack->frame_id;
+
+      if (fid > 5) inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
+
+      // one-way delay (microseconds) and Dmin
+      int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
+      if (owd < d_min.load()) d_min.store(owd);
+
+      double current_Dmin = d_min.load() / 1000000.0; // in secs
+      double pkt_D = owd / 1000000.0; // in sec
+
+      if (ack->flags & IS_PROBE) {
+        double t_i = max(0.0, pkt_D - current_Dmin);
+        inflight[fid].probes.push_back(t_i);
+      } else if (ack->flags & IS_LAST) {
+        inflight[fid].frame_D_sec = pkt_D;
+        inflight[fid].has_last = true;
+      }
+
+      if (inflight[fid].has_last && inflight[fid].probes.size() >= 1) {
+        // calculate BUR
+        double raw_r = PudicaAlgorithm::raw_BUR(inflight[fid].frame_D_sec, current_Dmin);
+        double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, inflight[fid].probes);
+        cout << "BUR: " << r_corr<< " bitrate: " << bitrate.load() << "\n";
+
+        pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
+
+        {
+          lock_guard<mutex> lock(hist_mtx);
+          hist.push_back({r_corr, bitrate.load()});
+          if (hist.size()>12) hist.pop_front();
+        }
+
+        // adaptive AI-MD bitrate adjustment
+        if (r_corr > 1.0) {
+          congested_frames++;
+          if (congested_frames>=3) bitrate.store(ack->rate);
+          else bitrate.store(bitrate.load()*0.85);
+        } else {
+          congested_frames = 0;
+          double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, bitrate.load());
+          double next_rate = PudicaAlgorithm::calculate_next_bitrate(bitrate.load(), r_tilde, frames_sent);
+          bitrate.store(next_rate);
+        }
+
+        inflight.erase(fid);
+      }
+    }
+  }
+
+public:
+  PudicaSender(const string& ip, int port) {
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) throw runtime_error("[sender] socket creation failed");
+
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, ip.c_str(), &dest.sin_addr) <= 0)
+      throw runtime_error("[sender] invalid ip address");
+  }
+
+  ~PudicaSender() {
+    stop();
+    if (sock>=0) close(sock);
+  }
+
+  void start() {
+    if (running) return;
+    running = true;
+    t_pacer = thread(&PudicaSender::pacer, this);
+    t_listener = thread(&PudicaSender::listener, this);
+  }
+
+  void stop() {
+    if (!running) return;
+    running = false;
+    if (t_pacer.joinable()) t_pacer.join();
+    if (t_listener.joinable()) t_listener.join();
+  }
 };
-
-PudicaState global_state;
-
-void pacer_thread(int sock, sockaddr_in client_addr) {
-  socklen_t client_len = sizeof(client_addr);
-  uint32_t current_frame_id = 1;
-
-  while (true) {
-    auto frame_start_time = steady_clock::now();
-
-    double bitrate = global_state.current_bitrate.load(); // current bitrate
-    double p = global_state.pacing_multiplier_p.load();
-
-    // frame size in packets [ 10^6 / 8 = 125 * 10^3 ]
-    uint32_t frame_bytes = (bitrate * 1000.0 * 125.0) / 60.0;
-    uint32_t total_packets = (frame_bytes / LOAD_SZ) + 1;
-
-    // sensible period = L/p
-    double sensible_period = INTERVAL / p;
-    double packet_interval = sensible_period / total_packets;
-
-    // send frames' packets
-    for (uint32_t id = 0; id < total_packets; id++) {
-      PktHeader header{};
-      header.frame_id = current_frame_id;
-      header.packet_id = id;
-      header.send_time = now();
-
-      if (id == 0)
-        header.flags |= IS_FIRST;
-      if (id == total_packets - 1)
-        header.flags |= IS_LAST;
-
-      // dummy payload and send
-      uint8_t buffer[LOAD_SZ] = {0};
-      memcpy(buffer, &header, sizeof(PktHeader));
-      sendto(sock, buffer, sizeof(buffer), 0, (sockaddr *)&client_addr, client_len);
-      // cout << "[sender] sent packet " << id << " of frame " << current_frame_id << "\n";
-
-      std::this_thread::sleep_for(microseconds(static_cast<int>(packet_interval)));
-    }
-
-    // agnostic period probes
-    double agnostic_period = INTERVAL - sensible_period;
-    double probe_interval = agnostic_period/(N_PROBE + 1);
-
-    for (uint32_t i=0; i<N_PROBE; i++) {
-      std::this_thread::sleep_for(microseconds(static_cast<int>(probe_interval)));
-
-      PktHeader probe_hdr{};
-      probe_hdr.frame_id = current_frame_id;
-      probe_hdr.packet_id = UINT32_MAX - i; // high id so that it does not get confused with data packets
-      probe_hdr.flags = IS_PROBE;
-      probe_hdr.send_time = now();
-
-      int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr *)&client_addr, client_len);
-      if (s<0) {
-        cerr << "[sender] send err: " << strerror(errno) << "\n";
-        continue;
-      }
-    }
-
-    // sleep until the next 16.67ms
-    current_frame_id++;
-    std::this_thread::sleep_until(frame_start_time + microseconds(INTERVAL));
-  }
-}
-
-// to measure the Bandwidth Utilization Ratio
-void listener_thread(int sock) {
-  uint8_t buf[MAX_BUF];
-  int congested_frames = 0;
-
-  struct FrameProgress {
-    double frame_D_sec = 0;
-    bool has_last_packet = false;
-    vector<double> probe_delays;
-  };
-  map<uint32_t, FrameProgress> inflight;
-
-  while(true) {
-    ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
-    if (n < sizeof(RecvACK)) continue;
-
-    RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
-    uint32_t fid = ack->frame_id;
-    if (fid > 5) 
-      inflight.erase(inflight.begin(), inflight.lower_bound(fid-5));
-
-    // one-way delay (microseconds) and Dmin
-    int64_t one_way_delay = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
-    if (one_way_delay < global_state.d_min.load())
-      global_state.d_min.store(one_way_delay);
-
-    double current_Dmin = global_state.d_min.load() / 1000000.0; // in secs
-    double pkt_D = one_way_delay / 1000000.0; // in sec
-
-    bool is_probe = (ack->flags & IS_PROBE);
-    bool is_last  = (ack->flags & IS_LAST);
-    
-    if (is_probe) {
-      double T_i = pkt_D - current_Dmin;
-      if (T_i < 0.0) T_i = 0.0;
-      inflight[fid].probe_delays.push_back(T_i);
-    } else if (is_last) {
-      inflight[fid].frame_D_sec = pkt_D;
-      inflight[fid].has_last_packet = true;
-    }
-
-    if (inflight[fid].has_last_packet && inflight[fid].probe_delays.size() == N_PROBE) {
-      // Calculate BUR
-      double raw_R = PudicaAlgorithm::raw_BUR(inflight[fid].frame_D_sec, current_Dmin);
-      double R_corrected = PudicaAlgorithm::corrected_BUR(raw_R, inflight[fid].probe_delays);
-      cout << "BUR: " << R_corrected<< " bitrate: " << global_state.current_bitrate.load()<< endl;
-
-      // Update Pacing Multiplier
-      global_state.pacing_multiplier_p.store(PudicaAlgorithm::pacing_multiplier(R_corrected));
-
-      {
-        // Long-term AI-MD History Update
-        lock_guard<mutex> lock(global_state.history_mutex);
-        global_state.history.push_back({R_corrected, global_state.current_bitrate.load()});
-        if (global_state.history.size() > 12) global_state.history.pop_front();
-      }
-
-      // Short-term Reactions
-      if (R_corrected > 1.0) {
-        congested_frames++;
-        if (congested_frames >= 3) global_state.current_bitrate.store(ack->rate); // Active draining
-        else global_state.current_bitrate.store(global_state.current_bitrate.load() * 0.85); // 15% fallback
-      } else {
-        congested_frames = 0;
-        double R_tilde = PudicaAlgorithm::smoothed_BUR(global_state.history, global_state.current_bitrate.load());
-        global_state.frames++;
-        double next_B = PudicaAlgorithm::calculate_next_bitrate(global_state.current_bitrate.load(), R_tilde, global_state.frames);
-        global_state.current_bitrate.store(next_B);
-      }
-
-      inflight.erase(fid);
-    }
-  }
-}
 
 int main(int argc, char* argv[]) {
   if (argc != 3) {
     cerr << "Usage: " << argv[0] << " <ip> <port>\n";
     return 1;
   }
-  string ip = argv[1];
-  int port = stoi(argv[2]);
 
-  int sock = socket(AF_INET, SOCK_DGRAM, 0);
-  if (sock < 0) panic("[sender] socket fail");
+  try {
+    PudicaSender sender(argv[1], stoi(argv[2]));
+    sender.start();
 
-  sockaddr_in dest{};
-  dest.sin_family = AF_INET;
-  dest.sin_port = htons(port);
+    cout << "[sender] sender running. auto-exiting soon.\n";
+    this_thread::sleep_for(seconds(30));
 
-  if (inet_pton(AF_INET, ip.c_str(), &dest.sin_addr) <= 0) {
-    panic("[sender] Invalid IP address format");
+    sender.stop();
+    cout << "[sender] exited.\n";
+  } catch (const exception& e) {
+    cerr << "Error: " << e.what() << "\n";
+    return 1;
   }
-
-  thread t1(pacer_thread, sock, dest);
-  thread t2(listener_thread, sock);
-
-  t1.join();
-  t2.join();
-
   return 0;
 }
