@@ -14,7 +14,7 @@ using namespace std;
 using namespace std::chrono;
 
 // time in microseconds
-uint64_t now() {
+uint64_t now_microsecs() {
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
@@ -42,7 +42,7 @@ public:
       throw runtime_error("[receiver] bind failed (port might already be in use)");
     }
 
-    last_calc = now();
+    last_calc = now_microsecs();
   }
 
   ~PudicaReceiver() {
@@ -66,7 +66,7 @@ public:
       }
       cout << "[receiver] got " << n << " bytes\n";
 
-      uint64_t recv_ts = now();
+      uint64_t recv_ts = now_microsecs();
       bytes_acc += n;
 
       uint64_t elapsed = recv_ts - last_calc;

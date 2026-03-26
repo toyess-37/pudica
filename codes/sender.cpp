@@ -12,14 +12,13 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-
 #include "protocol.h"
 #include "pudica_algo.h"
 
 using namespace std;
 using namespace std::chrono;
 
-uint64_t now() {
+uint64_t now_microsecs() {
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
@@ -93,7 +92,7 @@ private:
         PktHeader hdr{};
         hdr.frame_id = fid;
         hdr.packet_id = id;
-        hdr.send_time = now();
+        hdr.send_time = now_microsecs();
 
         if (id==0) hdr.flags |= IS_FIRST;
         if (id==pkts-1) hdr.flags |= IS_LAST;
@@ -115,7 +114,7 @@ private:
         probe_hdr.frame_id = fid;
         probe_hdr.packet_id = UINT32_MAX - i; // high id so that it does not get confused with data packets
         probe_hdr.flags = IS_PROBE;
-        probe_hdr.send_time = now();
+        probe_hdr.send_time = now_microsecs();
 
         int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr*)&dest, dest_len);
         if (s<0) {
