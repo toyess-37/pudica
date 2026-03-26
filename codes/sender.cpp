@@ -1,9 +1,9 @@
 #include <iostream>
 #include <cstring>
+#include <cmath>
 #include <map>
 #include <vector>
 #include <deque>
-
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -23,10 +23,38 @@ uint64_t now() {
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-// void spin_sleep(double usec) {
-//   auto start = steady_clock::now();
-//   while (steady_clock::now() - start < microseconds(static_cast<int>(usec))) {}
-// }
+/* 
+  uses the idea of precise_sleep from:
+  https://blog.bearcats.nl/accurate-sleep-function/
+  (tl;dr - dynamically updates the guess of OS delay
+         - sleeps for that much time only while also ensuring low cpu usage)
+  [the blog post explains various sleep methods in detail]
+*/
+void precise_sleep(double microsecs) {
+  double seconds = microsecs/1000000.0;
+
+  static double estimate = 5e-3; // initial guess of OS wakeup delay --> 5ms
+  static double mean = 5e-3;
+  static double m2 = 0;
+  static int64_t count = 1;
+  while (seconds > estimate) {
+    auto start = steady_clock::now();
+    this_thread::sleep_for(milliseconds(1));
+    auto end = steady_clock::now();
+    double observed = (end-start).count()/1e9;
+    seconds -= observed;
+    ++count;
+    double delta = observed - mean;
+    mean += delta/count;
+    m2 += delta * (observed - mean);
+    double stddev = sqrt(m2/(count - 1));
+    estimate = mean + stddev;
+  }
+  auto start = steady_clock::now();
+  auto spinNs = (int64_t)(seconds * 1e9);
+  auto delay = nanoseconds(spinNs);
+  while(steady_clock::now() - start < delay) {__asm__ volatile("pause" ::: "memory");}
+}
 
 class PudicaSender {
 private:
@@ -74,14 +102,14 @@ private:
         memcpy(buf, &hdr, sizeof(PktHeader));
         sendto(sock, buf, sizeof(buf), 0, (sockaddr*)&dest, dest_len);
 
-        this_thread::sleep_for(microseconds(static_cast<int>(pkt_interval)));
+        precise_sleep(pkt_interval);
       }
 
       double agnostic = INTERVAL - sensible;
       double probe_interval = agnostic/(N_PROBE + 1);
 
       for (int i=0; i<N_PROBE && running; i++) {
-        this_thread::sleep_for(microseconds(static_cast<int>(probe_interval)));
+        precise_sleep(probe_interval);
 
         PktHeader probe_hdr{};
         probe_hdr.frame_id = fid;
@@ -212,7 +240,7 @@ int main(int argc, char* argv[]) {
     sender.start();
 
     cout << "[sender] sender running. auto-exiting soon.\n";
-    this_thread::sleep_for(seconds(30));
+    precise_sleep(30'000'000.0);
 
     sender.stop();
     cout << "[sender] exited.\n";
