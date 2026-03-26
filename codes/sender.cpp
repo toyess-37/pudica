@@ -68,7 +68,7 @@ private:
   mutex hist_mtx;
   deque<PudicaAlgorithm::HistorySample> hist; // past 200ms sliding window
 
-  atomic<double> bitrate{10.0};
+  atomic<double> bitrate{50.0};
   atomic<double> pace_p{1.25};
   atomic<int64_t> d_min{INT64_MAX};
 
@@ -135,6 +135,7 @@ private:
     struct FrameProgress {
       double frame_D_sec = 0;
       bool has_last = false;
+      bool is_processed = false;
       vector<double> probes;
     };
     map<uint32_t, FrameProgress> inflight;
@@ -165,11 +166,21 @@ private:
         inflight[fid].has_last = true;
       }
 
-      if (inflight[fid].has_last && inflight[fid].probes.size() >= 1) {
+      if (!inflight[fid].is_processed && inflight[fid].has_last && inflight[fid].probes.size() >= 1) {
+        inflight[fid].is_processed = true;
+
         // calculate BUR
         double raw_r = PudicaAlgorithm::raw_BUR(inflight[fid].frame_D_sec, current_Dmin);
-        double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, inflight[fid].probes);
-        cout << "BUR: " << r_corr<< " bitrate: " << bitrate.load() << "\n";
+
+        double avg_probe_delay = 0.0;
+        for (auto t : inflight[fid].probes) avg_probe_delay += t;
+        avg_probe_delay /= inflight[fid].probes.size();
+        
+        std::vector<double> extrapolated_probes(N_PROBE, avg_probe_delay);
+        double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, extrapolated_probes);
+        cout << "BUR: " << r_corr
+             << " bitrate: " << bitrate.load() 
+             << " delay: " << (inflight[fid].frame_D_sec*1000.0) << " ms\n";
 
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
@@ -186,6 +197,7 @@ private:
           else bitrate.store(bitrate.load()*0.85);
         } else {
           congested_frames = 0;
+          frames_sent++;
           double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, bitrate.load());
           double next_rate = PudicaAlgorithm::calculate_next_bitrate(bitrate.load(), r_tilde, frames_sent);
           bitrate.store(next_rate);
