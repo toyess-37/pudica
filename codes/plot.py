@@ -57,7 +57,7 @@ def plot_measurements(burs, bitrates, delays, title_suffix=""):
   # The paper plots delay on a logarithmic scale to highlight tail latency spikes
   ax2.plot(time_ms, delays, color='#2ca02c', linewidth=1.5, label='One-Way Delay')
   ax2.set_ylabel('Delay (ms)', fontweight='bold')
-  ax2.set_yscale('log')
+  # ax2.set_yscale('log')
   ax2.grid(True, linestyle='--', alpha=0.6)
   ax2.legend(loc='upper right')
 
@@ -73,8 +73,8 @@ def plot_measurements(burs, bitrates, delays, title_suffix=""):
   plt.tight_layout()
   
   # Save and display
-  output_filename = 'pudica_measurements.png'
-  plt.savefig(output_filename, dpi=300)
+  output_filename = 'pudica_measurement.pdf'
+  plt.savefig(output_filename, dpi='figure', format='pdf')
   print(f"[*] Successfully generated plot: {output_filename}")
   plt.show()
 
