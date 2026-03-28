@@ -18,44 +18,52 @@
 using namespace std;
 using namespace std::chrono;
 
-uint64_t now_microsecs() {
+uint64_t now_microsecs()
+{
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-/* 
+/*
   uses the idea of precise_sleep from:
   https://blog.bearcats.nl/accurate-sleep-function/
   (tl;dr - dynamically updates the guess of OS delay
          - sleeps for that much time only while also ensuring low cpu usage)
   [the blog post explains various sleep methods in detail]
 */
-void precise_sleep(double microsecs) {
-  double seconds = microsecs/1000000.0;
+void precise_sleep(double microsecs)
+{
+  double seconds = microsecs / 1000000.0;
 
   static double estimate = 5e-3; // initial guess of OS wakeup delay --> 5ms
   static double mean = 5e-3;
   static double m2 = 0;
   static int64_t count = 1;
-  while (seconds > estimate) {
+  while (seconds > estimate)
+  {
     auto start = steady_clock::now();
     this_thread::sleep_for(milliseconds(1));
     auto end = steady_clock::now();
-    double observed = (end-start).count()/1e9;
+    double observed = (end - start).count() / 1e9;
     seconds -= observed;
     ++count;
     double delta = observed - mean;
-    mean += delta/count;
+    mean += delta / count;
     m2 += delta * (observed - mean);
-    double stddev = sqrt(m2/(count - 1));
+    double stddev = sqrt(m2 / (count - 1));
     estimate = mean + stddev;
+    estimate = max(1e-4, min(estimate, 5e-3));
   }
   auto start = steady_clock::now();
   auto spinNs = (int64_t)(seconds * 1e9);
   auto delay = nanoseconds(spinNs);
-  while(steady_clock::now() - start < delay) {__asm__ volatile("pause" ::: "memory");}
+  while (steady_clock::now() - start < delay)
+  {
+    __asm__ volatile("pause" ::: "memory");
+  }
 }
 
-class PudicaSender {
+class PudicaSender
+{
 private:
   int sock = -1;
   sockaddr_in dest{};
@@ -72,43 +80,65 @@ private:
   atomic<double> pace_p{1.25};
   atomic<int64_t> d_min{INT64_MAX};
 
+  mutex pacer_bytes_mtx;
+  map<uint32_t, uint32_t> pacer_bytes; // how many bytes is pacer() sending in each frame
+
+  atomic<bool> in_drain_phase{false};
+  atomic<double> pre_fallback_bitrate{0.0};
+
+  uint32_t mi_adjustment_frame = 0; // frame_id when last MI increase was sent
+
   uint32_t frames_sent = 0;
   uint64_t last_frames_reset = 0; // to be used to track when frames_sent was reset; reset every 5s irrespective of congestion
 
-  void pacer() {
+  void pacer()
+  {
     uint32_t fid = 1; // frame id
-    while(running) {
+    while (running)
+    {
       auto t_start = steady_clock::now();
 
       double rate = bitrate.load();
       double p = pace_p.load();
 
-      uint32_t f_bytes = (rate * 1000.0 * 125.0)/60.0;
-      uint32_t pkts = (f_bytes/LOAD_SZ) + 1;
+      uint32_t f_bytes = (rate * 1000.0 * 125.0) / 60.0;
+      uint32_t pkts = (f_bytes / LOAD_SZ) + 1;
 
-      double sensible = INTERVAL/p;
-      double pkt_interval = sensible/pkts;
+      {
+        lock_guard<mutex> lock(pacer_bytes_mtx);
+        pacer_bytes[fid] = f_bytes;
 
-      for (uint32_t id = 0; id < pkts && running; id++) {
+        if (pacer_bytes.size() > 50) 
+          pacer_bytes.erase(pacer_bytes.begin());
+      }
+
+      double sensible = INTERVAL / p;
+      double pkt_interval = sensible / pkts;
+
+      for (uint32_t id = 0; id < pkts && running; id++)
+      {
         PktHeader hdr{};
         hdr.frame_id = fid;
         hdr.packet_id = id;
         hdr.send_time = now_microsecs();
 
-        if (id==0) hdr.flags |= IS_FIRST;
-        if (id==pkts-1) hdr.flags |= IS_LAST;
+        if (id == 0)
+          hdr.flags |= IS_FIRST;
+        if (id == pkts - 1)
+          hdr.flags |= IS_LAST;
 
         uint8_t buf[LOAD_SZ] = {0};
         memcpy(buf, &hdr, sizeof(PktHeader));
-        sendto(sock, buf, sizeof(buf), 0, (sockaddr*)&dest, dest_len);
+        sendto(sock, buf, sizeof(buf), 0, (sockaddr *)&dest, dest_len);
 
         precise_sleep(pkt_interval);
       }
 
       double agnostic = INTERVAL - sensible;
-      double probe_interval = agnostic/(N_PROBE + 1);
+      double probe_interval = agnostic / (N_PROBE + 1);
 
-      for (int i=0; i<N_PROBE && running; i++) {
+      for (uint32_t i = 0; i < N_PROBE && running; i++)
+      {
         precise_sleep(probe_interval);
 
         PktHeader probe_hdr{};
@@ -117,26 +147,30 @@ private:
         probe_hdr.flags = IS_PROBE;
         probe_hdr.send_time = now_microsecs();
 
-        int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr*)&dest, dest_len);
-        if (s<0) {
+        int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr *)&dest, dest_len);
+        if (s < 0)
+        {
           cerr << "[sender] send err: " << strerror(errno) << "\n";
           continue;
         }
       }
-      
+
       fid++;
       this_thread::sleep_until(t_start + microseconds(INTERVAL));
     }
   }
 
-  void listener() {
+  void listener()
+  {
     uint8_t buf[MAX_BUF];
     int congested_frames = 0;
 
-    struct FrameProgress {
-      double frame_D_sec = 0;     // (in secs)
-      uint64_t first_send_us = 0; // send time of first packet of frame (microsecs)
-      uint64_t last_recv_us = 0;  // recv time of last packet of frame
+    struct FrameProgress
+    {
+      double frame_D_sec = 0;  // (in secs)
+      uint64_t first_send = 0; // send time of first packet of frame (microsecs)
+      uint64_t last_recv = 0;  // recv time of last packet of frame (microsecs)
+      uint32_t bytes_sent = 0; // how many bytes the pacer sent for a particular frame
       bool has_first = false;
       bool has_last = false;
       bool is_processed = false;
@@ -144,103 +178,186 @@ private:
     };
     map<uint32_t, FrameProgress> inflight;
 
-    while(running) {
+    while (running)
+    {
       ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
-      if (n < sizeof(RecvACK)) continue;
+      if (n < static_cast<ssize_t>(sizeof(RecvACK)))
+        continue;
 
-      RecvACK* ack = reinterpret_cast<RecvACK*>(buf);
+      RecvACK *ack = reinterpret_cast<RecvACK *>(buf);
       uint32_t fid = ack->frame_id;
 
-      if (fid > 5) inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
+      if (fid > 5)
+        inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
+
+      if (inflight.find(fid) == inflight.end()) // update it when we first see the frame fid
+      {
+        lock_guard<mutex> lock(pacer_bytes_mtx);
+        inflight[fid].bytes_sent = pacer_bytes[fid];
+      }
 
       // one-way delay (microseconds) and Dmin
       int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
-      if (owd < d_min.load()) d_min.store(owd);
+      if (owd < d_min.load())
+        d_min.store(owd);
 
-      double current_Dmin = d_min.load() / 1000000.0; // in secs
-      double pkt_D = owd / 1000000.0; // in sec
+      double current_Dmin = d_min.load() / 1'000'000.0; // in secs
+      double pkt_D = owd / 1'000'000.0;                 // in sec
 
-      if (ack->flags & IS_FIRST) {
-        inflight[fid].first_send_us = ack->echoed_send;
+      if (ack->flags & IS_FIRST)
+      {
+        inflight[fid].first_send = ack->echoed_send;
         inflight[fid].has_first = true;
       }
 
-      if (ack->flags & IS_LAST) {
-        inflight[fid].last_recv_us = ack->recv_time;
+      if (ack->flags & IS_LAST)
+      {
+        inflight[fid].last_recv = ack->recv_time;
         inflight[fid].has_last = true;
       }
-      
-      if (ack->flags & IS_PROBE) {
+
+      if (ack->flags & IS_PROBE)
+      {
         double rho = pace_p.load();
-        double L_SEC = INTERVAL / 1000000.0;
-        double T_bound = (1.0 - 1.0/rho)*L_SEC / (N_PROBE + 1);
+        double L_SEC = INTERVAL / 1'000'000.0;
+        double T_bound = (1.0 - 1.0 / rho) * L_SEC / (N_PROBE + 1);
         double raw_T = max(0.0, pkt_D - current_Dmin);
 
         double H_i = numeric_limits<double>::max();
-        if (inflight[fid].has_last && ack->recv_time >= inflight[fid].last_recv_us)
-          H_i = (static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(inflight[fid].last_recv_us)) / 1'000'000.0;
+        if (inflight[fid].has_last && ack->recv_time >= inflight[fid].last_recv)
+          H_i = (static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(inflight[fid].last_recv)) / 1'000'000.0;
 
         double t_i = min(min(raw_T, H_i), T_bound);
         inflight[fid].probes.push_back(t_i);
       }
 
-      if (!inflight[fid].is_processed && inflight[fid].has_first && inflight[fid].has_last && inflight[fid].probes.size() >= N_PROBE) {
+      if (!inflight[fid].is_processed && inflight[fid].has_first && inflight[fid].has_last && inflight[fid].probes.size() == N_PROBE)
+      {
         inflight[fid].is_processed = true;
 
         // D = recv_time(last) − send_time(first) [all in microsecs]
-        int64_t D_us = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(inflight[fid].first_send_us);
+        int64_t D_us = static_cast<int64_t>(inflight[fid].last_recv) - static_cast<int64_t>(inflight[fid].first_send);
         inflight[fid].frame_D_sec = D_us / 1'000'000.0;
 
         // calculate BUR
         double raw_r = PudicaAlgorithm::raw_BUR(inflight[fid].frame_D_sec, current_Dmin);
+        double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, inflight[fid].probes);
 
-        double avg_probe_delay = 0.0;
-        for (auto t : inflight[fid].probes) avg_probe_delay += t;
-        avg_probe_delay /= inflight[fid].probes.size();
-        
-        std::vector<double> extrapolated_probes(N_PROBE, avg_probe_delay);
-        double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, extrapolated_probes);
-        cout << "BUR: " << r_corr
-             << " bitrate: " << bitrate.load() 
-             << " delay: " << (inflight[fid].frame_D_sec*1000.0) << " ms\n";
+        // for wsl -- don't prioritize probe_delays as precise_sleep is still not precise
+        //r_corr = (r_corr - raw_r)*1 + raw_r;
 
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
+
+        // get the current pre_fallback rate before any decision on update of bitrate
+        double cur = bitrate.load();
+        if (pre_fallback_bitrate.load() > 0.0) // there was a fallback to 85% 
+        {
+          cur = pre_fallback_bitrate.load();
+          bitrate.store(cur);
+          pre_fallback_bitrate.store(0.0); // no pending fallback
+        }
+
+        cout << "BUR: " << r_corr
+             << " bitrate: " << bitrate.load()
+             << " delay: " << (inflight[fid].frame_D_sec * 1000.0) << " ms\n";
 
         {
           lock_guard<mutex> lock(hist_mtx);
           hist.push_back({r_corr, bitrate.load()});
-          if (hist.size()>12) hist.pop_front();
+          if (hist.size() > 12)
+            hist.pop_front();
         }
 
         // adaptive AI-MD bitrate adjustment
-        if (r_corr > 1.0) {
+        if (r_corr > 1.0)
+        {
           congested_frames++;
           frames_sent = 0; // reset frames when congestion
-          if (congested_frames>=3) bitrate.store(ack->rate);
-          else bitrate.store(bitrate.load()*0.85);
-        } else {
+          if (congested_frames >= 3)
+          {
+            in_drain_phase.store(true);
+            pre_fallback_bitrate.store(0.0);
+
+            // draining_rate: extra throughput needed to clear self-queued data within DRAIN_WINDOW.
+            constexpr double DRAIN_WINDOW = 0.200; // 200ms then drain
+
+            double inflight_bytes = 0;
+            for (auto const& [id, progress] : inflight)
+              inflight_bytes += progress.bytes_sent;
+
+            //double avg_frame_bytes = (cur*125000.0) / 60.0;
+            //double queued_bytes = inflight_frames * avg_frame_bytes;
+            double draining_rate = (8.0 * inflight_bytes) / (DRAIN_WINDOW * 1'000'000.0); // Mbps
+
+            // B_new = ALPHA * receiving_rate − draining_rate (receiving_rate = ack->rate)
+            double new_B = PudicaAlgorithm::ALPHA * ack->rate - draining_rate;
+            bitrate.store(max(new_B, PudicaAlgorithm::B_MIN));
+
+            mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
+          }
+          else
+          {
+            pre_fallback_bitrate.store(cur); // save for restore
+            bitrate.store(cur*0.85);
+          }
+        }
+        else
+        {
+          // when previous one was draining phase, skip calculation on this frame and reset to normal
+          // for fresh calculation
+          if (in_drain_phase.load())
+          {
+            in_drain_phase.store(false);
+            // restore bitrate to the current receiving_rate
+            bitrate.store(min(max(ack->rate, static_cast<double>(PudicaAlgorithm::B_MIN)), static_cast<double>(PudicaAlgorithm::B_MAX)));
+
+            congested_frames = 0;
+            frames_sent = 0;
+            // skip the normal MI/AI-MD update this frame
+            mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
+            inflight.erase(fid);
+            continue;
+          }
           congested_frames = 0;
           frames_sent++;
           uint64_t now = now_microsecs();
-          if (last_frames_reset == 0) last_frames_reset = now;
-          if (now - last_frames_reset >= 5'000'000ULL) {
+          if (last_frames_reset == 0)
+            last_frames_reset = now;
+          if (now - last_frames_reset >= 5'000'000ULL)
+          {
             frames_sent = 0;
             last_frames_reset = now;
           }
           double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, bitrate.load());
-          double next_rate = PudicaAlgorithm::calculate_next_bitrate(bitrate.load(), r_tilde, frames_sent);
-          bitrate.store(next_rate);
-        }
 
+          // if fid <= mi_adjustment_frame, we haven't received the latest feedback; so we'll skip it
+          if (fid > mi_adjustment_frame)
+          {
+            if (r_tilde <= PudicaAlgorithm::ALPHA)
+            {
+              double xi = PudicaAlgorithm::GAMMA_MI * (((PudicaAlgorithm::ALPHA + 1.0) / 2.0 - r_tilde) / r_tilde);
+              double new_B = min(max(bitrate.load() * (1.0 + xi), static_cast<double>(PudicaAlgorithm::B_MIN)), static_cast<double>(PudicaAlgorithm::B_MAX));
+              bitrate.store(new_B);
+            }
+            else
+            {
+              double next_rate = PudicaAlgorithm::calculate_next_bitrate(bitrate.load(), r_tilde, frames_sent);
+              bitrate.store(next_rate);
+            }
+            mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
+          }
+        }
         inflight.erase(fid);
       }
     }
   }
 
 public:
-  PudicaSender(const string& ip, int port) {
+  PudicaSender(const string &ip, int port)
+  {
     sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) throw runtime_error("[sender] socket creation failed");
+    if (sock < 0)
+      throw runtime_error("[sender] socket creation failed");
 
     dest.sin_family = AF_INET;
     dest.sin_port = htons(port);
@@ -249,33 +366,44 @@ public:
       throw runtime_error("[sender] invalid ip address");
   }
 
-  ~PudicaSender() {
+  ~PudicaSender()
+  {
     stop();
-    if (sock>=0) close(sock);
+    if (sock >= 0)
+      close(sock);
   }
 
-  void start() {
-    if (running) return;
+  void start()
+  {
+    if (running)
+      return;
     running = true;
     t_pacer = thread(&PudicaSender::pacer, this);
     t_listener = thread(&PudicaSender::listener, this);
   }
 
-  void stop() {
-    if (!running) return;
+  void stop()
+  {
+    if (!running)
+      return;
     running = false;
-    if (t_pacer.joinable()) t_pacer.join();
-    if (t_listener.joinable()) t_listener.join();
+    if (t_pacer.joinable())
+      t_pacer.join();
+    if (t_listener.joinable())
+      t_listener.join();
   }
 };
 
-int main(int argc, char* argv[]) {
-  if (argc != 3) {
+int main(int argc, char *argv[])
+{
+  if (argc != 3)
+  {
     cerr << "Usage: " << argv[0] << " <ip> <port>\n";
     return 1;
   }
 
-  try {
+  try
+  {
     PudicaSender sender(argv[1], stoi(argv[2]));
     sender.start();
 
@@ -284,9 +412,12 @@ int main(int argc, char* argv[]) {
 
     sender.stop();
     cout << "[sender] exited.\n";
-  } catch (const exception& e) {
+  }
+  catch (const exception &e)
+  {
     cerr << "[sender] Error: " << e.what() << "\n";
     return 1;
   }
+
   return 0;
 }

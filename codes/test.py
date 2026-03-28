@@ -29,4 +29,4 @@ def step_trace(fname, bw1, bw2, t_swap, dur):
 
 if __name__ == "__main__":
   const_trace("const_20m.up", 20, 30)
-  step_trace("step_30_10m.up", 30, 10, 15, 30)
+  const_trace("const_100m.up", 100, 30)
