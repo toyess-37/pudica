@@ -6,11 +6,11 @@ RECEIVER = receiver
 
 all: $(SENDER) $(SENDER_KERN) $(RECEIVER)
 
-$(SENDER): sender.cpp pudica_algo.cpp protocol.h pudica_algo.h
-	$(CXX) $(CXXFLAGS) sender.cpp pudica_algo.cpp -o $(SENDER)
+$(SENDER): sender.cc pudica_algo.cc protocol.h pudica_algo.h
+	$(CXX) $(CXXFLAGS) sender.cc pudica_algo.cc -o $(SENDER)
 
-$(RECEIVER): receiver.cpp protocol.h
-	$(CXX) $(CXXFLAGS) receiver.cpp -o $(RECEIVER)
+$(RECEIVER): receiver.cc protocol.h
+	$(CXX) $(CXXFLAGS) receiver.cc -o $(RECEIVER)
 
 clean:
 	rm -f $(SENDER) $(RECEIVER)
