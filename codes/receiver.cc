@@ -14,11 +14,13 @@ using namespace std;
 using namespace std::chrono;
 
 // time in microseconds
-uint64_t now_microsecs() {
+uint64_t now_microsecs()
+{
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-class PudicaReceiver {
+class PudicaReceiver
+{
 private:
   int sock = -1;
   sockaddr_in server_addr{};
@@ -29,15 +31,18 @@ private:
   double recv_rate = 0.0; // in Mbps
 
 public:
-  PudicaReceiver(int port) {
+  PudicaReceiver(int port)
+  {
     sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock<0) throw runtime_error("[receiver] socket creation failed");
+    if (sock < 0)
+      throw runtime_error("[receiver] socket creation failed");
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(sock, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (bind(sock, (sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
       close(sock);
       throw runtime_error("[receiver] bind failed (port might already be in use)");
     }
@@ -45,12 +50,15 @@ public:
     last_calc = now_microsecs();
   }
 
-  ~PudicaReceiver() {
+  ~PudicaReceiver()
+  {
     running = false;
-    if (sock>=0) close(sock);
+    if (sock >= 0)
+      close(sock);
   }
 
-  void run() {
+  void run()
+  {
     running = true;
     cout << "[receiver] Listening on port " << ntohs(server_addr.sin_port) << "\n";
 
@@ -58,9 +66,11 @@ public:
     sockaddr_in client_addr{};
     socklen_t client_len = sizeof(client_addr);
 
-    while(running) {
-      ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, (sockaddr*)&client_addr, &client_len);
-      if (n<0) {
+    while (running)
+    {
+      ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, (sockaddr *)&client_addr, &client_len);
+      if (n < 0)
+      {
         cerr << "[receiver] recv error: " << strerror(errno) << "\n";
         continue;
       }
@@ -68,22 +78,24 @@ public:
 
       uint64_t recv_ts = now_microsecs();
 
-      if (n < static_cast<ssize_t>(sizeof(PktHeader))) {
+      if (n < static_cast<ssize_t>(sizeof(PktHeader)))
+      {
         cerr << "[receiver] small packet dropped\n";
         continue;
       }
-      
+
       bytes_acc += n;
 
       uint64_t elapsed = recv_ts - last_calc;
       // recalculate every 100ms
-      if (elapsed >= 100000) { 
+      if (elapsed >= 100000)
+      {
         recv_rate = (8.0 * bytes_acc) / elapsed;
         bytes_acc = 0;
         last_calc = recv_ts;
       }
 
-      PktHeader* hdr = reinterpret_cast<PktHeader*>(buf);
+      PktHeader *hdr = reinterpret_cast<PktHeader *>(buf);
 
       RecvACK ack{};
       ack.echoed_send = hdr->send_time;
@@ -93,23 +105,29 @@ public:
       ack.packet_id = hdr->packet_id;
       ack.flags = hdr->flags;
 
-      int s = sendto(sock, &ack, sizeof(RecvACK), 0, (sockaddr*)&client_addr, client_len);
-      if (s<0) cerr << "[receiver] send error: " << strerror(errno) << "\n";
+      int s = sendto(sock, &ack, sizeof(RecvACK), 0, (sockaddr *)&client_addr, client_len);
+      if (s < 0)
+        cerr << "[receiver] send error: " << strerror(errno) << "\n";
     }
   }
 };
 
-int main(int argc, char *argv[]) {
-  if (argc != 2) {
+int main(int argc, char *argv[])
+{
+  if (argc != 2)
+  {
     cerr << "Usage: " << argv[0] << " <port>\n";
     return 1;
   }
 
-  try {
+  try
+  {
     int port = stoi(argv[1]);
     PudicaReceiver receiver(port);
     receiver.run();
-  } catch (const exception& e) {
+  }
+  catch (const exception &e)
+  {
     cerr << "[recv] Error: " << e.what() << "\n";
     return 1;
   }
