@@ -108,7 +108,7 @@ private:
         lock_guard<mutex> lock(pacer_bytes_mtx);
         pacer_bytes[fid] = f_bytes;
 
-        if (pacer_bytes.size() > 50) 
+        if (pacer_bytes.size() > 50)
           pacer_bytes.erase(pacer_bytes.begin());
       }
 
@@ -244,13 +244,13 @@ private:
         double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, inflight[fid].probes);
 
         // for wsl -- don't prioritize probe_delays as precise_sleep is still not precise
-        //r_corr = (r_corr - raw_r)*1 + raw_r;
+        // r_corr = (r_corr - raw_r)*1 + raw_r;
 
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
         // get the current pre_fallback rate before any decision on update of bitrate
         double cur = bitrate.load();
-        if (pre_fallback_bitrate.load() > 0.0) // there was a fallback to 85% 
+        if (pre_fallback_bitrate.load() > 0.0) // there was a fallback to 85%
         {
           cur = pre_fallback_bitrate.load();
           bitrate.store(cur);
@@ -282,11 +282,11 @@ private:
             constexpr double DRAIN_WINDOW = 0.200; // 200ms then drain
 
             double inflight_bytes = 0;
-            for (auto const& [id, progress] : inflight)
+            for (auto const &[id, progress] : inflight)
               inflight_bytes += progress.bytes_sent;
 
-            //double avg_frame_bytes = (cur*125000.0) / 60.0;
-            //double queued_bytes = inflight_frames * avg_frame_bytes;
+            // double avg_frame_bytes = (cur*125000.0) / 60.0;
+            // double queued_bytes = inflight_frames * avg_frame_bytes;
             double draining_rate = (8.0 * inflight_bytes) / (DRAIN_WINDOW * 1'000'000.0); // Mbps
 
             // B_new = ALPHA * receiving_rate − draining_rate (receiving_rate = ack->rate)
@@ -298,7 +298,7 @@ private:
           else
           {
             pre_fallback_bitrate.store(cur); // save for restore
-            bitrate.store(cur*0.85);
+            bitrate.store(cur * 0.85);
           }
         }
         else
