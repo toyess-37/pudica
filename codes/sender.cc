@@ -73,6 +73,7 @@ private:
   atomic<int64_t> d_min{INT64_MAX};
 
   uint32_t frames_sent = 0;
+  uint64_t last_frames_reset = 0; // to be used to track when frames_sent was reset; reset every 5s irrespective of congestion
 
   void pacer() {
     uint32_t fid = 1; // frame id
@@ -133,7 +134,10 @@ private:
     int congested_frames = 0;
 
     struct FrameProgress {
-      double frame_D_sec = 0;
+      double frame_D_sec = 0;     // (in secs)
+      uint64_t first_send_us = 0; // send time of first packet of frame (microsecs)
+      uint64_t last_recv_us = 0;  // recv time of last packet of frame
+      bool has_first = false;
       bool has_last = false;
       bool is_processed = false;
       vector<double> probes;
@@ -156,18 +160,36 @@ private:
       double current_Dmin = d_min.load() / 1000000.0; // in secs
       double pkt_D = owd / 1000000.0; // in sec
 
-      if (ack->flags & IS_PROBE) {
-        double T_bound = ((INTERVAL / 1000000.0) * 0.2) / (N_PROBE + 1);
-        double raw_T = max(0.0, pkt_D - current_Dmin);
-        double t_i = min(raw_T, T_bound);
-        inflight[fid].probes.push_back(t_i);
-      } else if (ack->flags & IS_LAST) {
-        inflight[fid].frame_D_sec = pkt_D;
-        inflight[fid].has_last = true;
+      if (ack->flags & IS_FIRST) {
+        inflight[fid].first_send_us = ack->echoed_send;
+        inflight[fid].has_first = true;
       }
 
-      if (!inflight[fid].is_processed && inflight[fid].has_last && inflight[fid].probes.size() >= 1) {
+      if (ack->flags & IS_LAST) {
+        inflight[fid].last_recv_us = ack->recv_time;
+        inflight[fid].has_last = true;
+      }
+      
+      if (ack->flags & IS_PROBE) {
+        double rho = pace_p.load();
+        double L_SEC = INTERVAL / 1000000.0;
+        double T_bound = (1.0 - 1.0/rho)*L_SEC / (N_PROBE + 1);
+        double raw_T = max(0.0, pkt_D - current_Dmin);
+
+        double H_i = numeric_limits<double>::max();
+        if (inflight[fid].has_last && ack->recv_time >= inflight[fid].last_recv_us)
+          H_i = (static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(inflight[fid].last_recv_us)) / 1'000'000.0;
+
+        double t_i = min(min(raw_T, H_i), T_bound);
+        inflight[fid].probes.push_back(t_i);
+      }
+
+      if (!inflight[fid].is_processed && inflight[fid].has_first && inflight[fid].has_last && inflight[fid].probes.size() >= N_PROBE) {
         inflight[fid].is_processed = true;
+
+        // D = recv_time(last) − send_time(first) [all in microsecs]
+        int64_t D_us = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(inflight[fid].first_send_us);
+        inflight[fid].frame_D_sec = D_us / 1'000'000.0;
 
         // calculate BUR
         double raw_r = PudicaAlgorithm::raw_BUR(inflight[fid].frame_D_sec, current_Dmin);
@@ -193,11 +215,18 @@ private:
         // adaptive AI-MD bitrate adjustment
         if (r_corr > 1.0) {
           congested_frames++;
+          frames_sent = 0; // reset frames when congestion
           if (congested_frames>=3) bitrate.store(ack->rate);
           else bitrate.store(bitrate.load()*0.85);
         } else {
           congested_frames = 0;
           frames_sent++;
+          uint64_t now = now_microsecs();
+          if (last_frames_reset == 0) last_frames_reset = now;
+          if (now - last_frames_reset >= 5'000'000ULL) {
+            frames_sent = 0;
+            last_frames_reset = now;
+          }
           double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, bitrate.load());
           double next_rate = PudicaAlgorithm::calculate_next_bitrate(bitrate.load(), r_tilde, frames_sent);
           bitrate.store(next_rate);
