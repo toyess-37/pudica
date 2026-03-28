@@ -67,6 +67,12 @@ public:
       cout << "[receiver] got " << n << " bytes\n";
 
       uint64_t recv_ts = now_microsecs();
+
+      if (n < static_cast<ssize_t>(sizeof(PktHeader))) {
+        cerr << "[receiver] small packet dropped\n";
+        continue;
+      }
+      
       bytes_acc += n;
 
       uint64_t elapsed = recv_ts - last_calc;
@@ -75,10 +81,6 @@ public:
         recv_rate = (8.0 * bytes_acc) / elapsed;
         bytes_acc = 0;
         last_calc = recv_ts;
-      }
-      if (n < sizeof(PktHeader)) {
-        cerr << "[receiver] small packet dropped\n";
-        continue;
       }
 
       PktHeader* hdr = reinterpret_cast<PktHeader*>(buf);
