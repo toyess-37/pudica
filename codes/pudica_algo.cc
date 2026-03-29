@@ -79,9 +79,10 @@ namespace PudicaAlgorithm
       double A = I - (GAMMA_MD * current_B); // net step A
 
       // bounds on A (according to section 4.2 of the paper)
-      double A_min = 0.0;
+      double A_min = A_MIN;
       double A_max = A_MAX * current_B;
-      A = std::min(std::max(A_min, A), A_max);
+      //A = std::min(std::max(A_min, A), A_max);
+      //A = std::min(A, A_max);
 
       new_B = current_B + A;
     } // steps for R > 1.0 will be addressed in the sender loop

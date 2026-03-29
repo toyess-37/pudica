@@ -11,7 +11,8 @@ namespace PudicaAlgorithm
   constexpr double GAMMA_MD = 0.05; // MD param for AI-MD
   constexpr double B_MAX = 50.0;    // maximum bitrate in Mbps
   constexpr double B_MIN = 1.0;     // minimum bitrate in Mbps
-  constexpr double A_MAX = 1.0;     // A_max = A_MAX * current_B; A_new = min(A_max, A_old)
+  constexpr double A_MIN = -1.0;    // lower bound capping A (according to section 4.2 of paper)
+  constexpr double A_MAX = 1.0;     // A_max = A_MAX * current_B; A_new = min(A_max, A_new)
 
   struct HistorySample
   {

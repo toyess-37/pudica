@@ -76,7 +76,7 @@ private:
   mutex hist_mtx;
   deque<PudicaAlgorithm::HistorySample> hist; // past 200ms sliding window
 
-  atomic<double> bitrate{50.0};
+  atomic<double> bitrate{0.0};
   atomic<double> pace_p{1.25};
   atomic<int64_t> d_min{INT64_MAX};
 
@@ -167,7 +167,7 @@ private:
 
     struct FrameProgress
     {
-      double frame_D_sec = 0;  // (in secs)
+      double frame_D_sec = 0;  // frame delay (in secs)
       uint64_t first_send = 0; // send time of first packet of frame (microsecs)
       uint64_t last_recv = 0;  // recv time of last packet of frame (microsecs)
       uint32_t bytes_sent = 0; // how many bytes the pacer sent for a particular frame
@@ -244,7 +244,7 @@ private:
         double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, inflight[fid].probes);
 
         // for wsl -- don't prioritize probe_delays as precise_sleep is still not precise
-        // r_corr = (r_corr - raw_r)*1 + raw_r;
+        // r_corr = (r_corr - raw_r)*0.1 + raw_r;
 
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
@@ -259,7 +259,7 @@ private:
 
         cout << "BUR: " << r_corr
              << " bitrate: " << bitrate.load()
-             << " delay: " << (inflight[fid].frame_D_sec * 1000.0) << " ms\n";
+             << " delay: " << ((inflight[fid].frame_D_sec - current_Dmin) * 1000.0) << " ms\n";
 
         {
           lock_guard<mutex> lock(hist_mtx);
