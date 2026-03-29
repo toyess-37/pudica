@@ -73,7 +73,7 @@ def plot_measurements(burs, bitrates, delays, title_suffix=""):
   plt.tight_layout()
   
   # Save and display
-  output_filename = 'pudica_measurement.pdf'
+  output_filename = 'pudica_measurement_new2.pdf'
   plt.savefig(output_filename, dpi='figure', format='pdf')
   print(f"[*] Successfully generated plot: {output_filename}")
   plt.show()
