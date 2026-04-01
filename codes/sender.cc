@@ -102,7 +102,7 @@ private:
       double p = pace_p.load();
 
       uint32_t f_bytes = (rate * 1000.0 * 125.0) / 60.0;
-      uint32_t pkts = (f_bytes / LOAD_SZ) + 1;
+      uint32_t pkts = (f_bytes + LOAD_SZ - 1) / LOAD_SZ;
 
       {
         lock_guard<mutex> lock(pacer_bytes_mtx);
