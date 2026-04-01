@@ -142,6 +142,7 @@ private:
         probe_hdr.flags = IS_PROBE;
         probe_hdr.send_time = now_microsecs();
 
+        memcpy(buf, &probe_hdr, sizeof(PktHeader));
         int s = sendto(sock, &probe_hdr, sizeof(PktHeader), 0, (sockaddr *)&dest, dest_len);
         if (s < 0)
         {
@@ -195,7 +196,10 @@ private:
       // one-way delay (microseconds) and Dmin
       int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
       if (owd < Dmin)
+      {
         d_min.store(owd);
+        Dmin = owd;
+      }
 
       double current_Dmin = Dmin / 1'000'000.0; // in secs
       double pkt_D = owd / 1'000'000.0;                 // in sec
@@ -336,13 +340,13 @@ private:
             if (r_tilde <= PudicaAlgorithm::ALPHA)
             {
               double xi = PudicaAlgorithm::GAMMA_MI * (((PudicaAlgorithm::ALPHA + 1.0) / 2.0 - r_tilde) / r_tilde);
-              double new_B = min(max(bitrate.load() * (1.0 + xi), PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX);
-              bitrate.store(new_B);
+              rate = min(max(rate * (1.0 + xi), PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX);
+              bitrate.store(rate);
             }
             else
             {
-              double next_rate = PudicaAlgorithm::calculate_next_bitrate(bitrate.load(), r_tilde, frames_sent);
-              bitrate.store(next_rate);
+              rate = PudicaAlgorithm::calculate_next_bitrate(rate, r_tilde, frames_sent);
+              bitrate.store(rate);
             }
             mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
           }
