@@ -101,9 +101,9 @@ private:
       double rho = pace_p.load();
 
       uint32_t f_bytes = (rate * 1000.0 * 125.0) / 60.0;
-      uint32_t pkts = (f_bytes/LOAD_SZ) + 1;
+      uint32_t pkts = (f_bytes / LOAD_SZ) + 1;
 
-      pacer_bytes[fid%128].store(f_bytes, memory_order_relaxed);
+      pacer_bytes[fid % 128].store(f_bytes, memory_order_relaxed);
 
       double sensible = INTERVAL / rho;
       double pkt_interval = sensible / pkts;
@@ -191,7 +191,7 @@ private:
         inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
 
       if (inflight.find(fid) == inflight.end()) // update it when we first see the frame fid
-        inflight[fid].bytes_sent = pacer_bytes[fid%128].load(memory_order_relaxed);
+        inflight[fid].bytes_sent = pacer_bytes[fid % 128].load(memory_order_relaxed);
 
       // one-way delay (microseconds) and Dmin
       int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
@@ -202,7 +202,7 @@ private:
       }
 
       double current_Dmin = Dmin / 1'000'000.0; // in secs
-      double pkt_D = owd / 1'000'000.0;                 // in sec
+      double pkt_D = owd / 1'000'000.0;         // in sec
 
       if (ack->flags & IS_FIRST)
       {
@@ -234,7 +234,7 @@ private:
       {
         inflight[fid].is_done = true;
 
-        // D = recv_time(last) − send_time(first) [all in microsecs]
+        // D_us = recv_time(last) − send_time(first) [in microsecs]
         int64_t D_us = static_cast<int64_t>(inflight[fid].last_recv) - static_cast<int64_t>(inflight[fid].first_send);
         inflight[fid].frame_D_sec = D_us / 1'000'000.0;
 
@@ -247,11 +247,9 @@ private:
 
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
-        // get the current pre_fallback rate before any decision on update of bitrate
-
         cout << "BUR: " << r_corr
              << " bitrate: " << rate
-             << " delay: " << ((inflight[fid].frame_D_sec - current_Dmin) * 1000.0) << " ms\n";
+             << " delay: " << ((inflight[fid].frame_D_sec - current_Dmin) * 1000.0) << "\n";
 
         {
           lock_guard<mutex> lock(hist_mtx);
@@ -265,7 +263,10 @@ private:
         {
           congested_frames++;
           frames_sent = 0; // reset frames when congestion
-          if (in_drain_phase.load()) {}
+          if (in_drain_phase.load()) 
+          {
+            // do nothing; eat chocolate
+          }
           else if (congested_frames >= 3)
           {
             in_drain_phase.store(true);
