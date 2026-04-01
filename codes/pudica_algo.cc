@@ -86,6 +86,6 @@ namespace PudicaAlgorithm
       new_B = current_B + A;
     } // steps for R > 1.0 will be addressed in the sender loop
 
-    return std::min(std::max(new_B, 1.0), static_cast<double>(B_MAX));
+    return std::min(std::max(new_B, 1.0), B_MAX);
   }
 }

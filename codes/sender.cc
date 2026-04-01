@@ -80,8 +80,7 @@ private:
   atomic<double> pace_p{1.25};
   atomic<int64_t> d_min{INT64_MAX};
 
-  mutex pacer_bytes_mtx;
-  map<uint32_t, uint32_t> pacer_bytes; // how many bytes is pacer() sending in each frame
+  std::atomic<uint32_t> pacer_bytes[128]; // how many bytes is pacer() sending in each frame
 
   atomic<bool> in_drain_phase{false};
   atomic<double> pre_fallback_bitrate{0.0};
@@ -99,21 +98,18 @@ private:
       auto t_start = steady_clock::now();
 
       double rate = bitrate.load();
-      double p = pace_p.load();
+      double rho = pace_p.load();
 
       uint32_t f_bytes = (rate * 1000.0 * 125.0) / 60.0;
-      uint32_t pkts = (f_bytes + LOAD_SZ - 1) / LOAD_SZ;
+      uint32_t pkts = (f_bytes/LOAD_SZ) + 1;
 
-      {
-        lock_guard<mutex> lock(pacer_bytes_mtx);
-        pacer_bytes[fid] = f_bytes;
+      pacer_bytes[fid%128].store(f_bytes, memory_order_relaxed);
 
-        if (pacer_bytes.size() > 50)
-          pacer_bytes.erase(pacer_bytes.begin());
-      }
-
-      double sensible = INTERVAL / p;
+      double sensible = INTERVAL / rho;
       double pkt_interval = sensible / pkts;
+
+      uint8_t buf[LOAD_SZ];
+      memset(buf + sizeof(PktHeader), 0, LOAD_SZ - sizeof(PktHeader));
 
       for (uint32_t id = 0; id < pkts && running; id++)
       {
@@ -127,7 +123,6 @@ private:
         if (id == pkts - 1)
           hdr.flags |= IS_LAST;
 
-        uint8_t buf[LOAD_SZ] = {0};
         memcpy(buf, &hdr, sizeof(PktHeader));
         sendto(sock, buf, sizeof(buf), 0, (sockaddr *)&dest, dest_len);
 
@@ -173,13 +168,17 @@ private:
       uint32_t bytes_sent = 0; // how many bytes the pacer sent for a particular frame
       bool has_first = false;
       bool has_last = false;
-      bool is_processed = false;
+      bool is_done = false;
       vector<double> probes;
     };
     map<uint32_t, FrameProgress> inflight;
 
     while (running)
     {
+      double rate = bitrate.load();
+      double rho = pace_p.load();
+      double Dmin = d_min.load();
+
       ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
       if (n < static_cast<ssize_t>(sizeof(RecvACK)))
         continue;
@@ -187,21 +186,18 @@ private:
       RecvACK *ack = reinterpret_cast<RecvACK *>(buf);
       uint32_t fid = ack->frame_id;
 
-      if (fid > 5)
+      if (fid > 5 && (ack->flags & IS_FIRST)) // reset only on frame boundary
         inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
 
       if (inflight.find(fid) == inflight.end()) // update it when we first see the frame fid
-      {
-        lock_guard<mutex> lock(pacer_bytes_mtx);
-        inflight[fid].bytes_sent = pacer_bytes[fid];
-      }
+        inflight[fid].bytes_sent = pacer_bytes[fid%128].load(memory_order_relaxed);
 
       // one-way delay (microseconds) and Dmin
       int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
-      if (owd < d_min.load())
+      if (owd < Dmin)
         d_min.store(owd);
 
-      double current_Dmin = d_min.load() / 1'000'000.0; // in secs
+      double current_Dmin = Dmin / 1'000'000.0; // in secs
       double pkt_D = owd / 1'000'000.0;                 // in sec
 
       if (ack->flags & IS_FIRST)
@@ -218,7 +214,6 @@ private:
 
       if (ack->flags & IS_PROBE)
       {
-        double rho = pace_p.load();
         double L_SEC = INTERVAL / 1'000'000.0;
         double T_bound = (1.0 - 1.0 / rho) * L_SEC / (N_PROBE + 1);
         double raw_T = max(0.0, pkt_D - current_Dmin);
@@ -231,9 +226,9 @@ private:
         inflight[fid].probes.push_back(t_i);
       }
 
-      if (!inflight[fid].is_processed && inflight[fid].has_first && inflight[fid].has_last && inflight[fid].probes.size() == N_PROBE)
+      if (!inflight[fid].is_done && inflight[fid].has_first && inflight[fid].has_last && inflight[fid].probes.size() == N_PROBE)
       {
-        inflight[fid].is_processed = true;
+        inflight[fid].is_done = true;
 
         // D = recv_time(last) − send_time(first) [all in microsecs]
         int64_t D_us = static_cast<int64_t>(inflight[fid].last_recv) - static_cast<int64_t>(inflight[fid].first_send);
@@ -249,16 +244,9 @@ private:
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
         // get the current pre_fallback rate before any decision on update of bitrate
-        double cur = bitrate.load();
-        if (pre_fallback_bitrate.load() > 0.0) // there was a fallback to 85%
-        {
-          cur = pre_fallback_bitrate.load();
-          bitrate.store(cur);
-          pre_fallback_bitrate.store(0.0); // no pending fallback
-        }
 
         cout << "BUR: " << r_corr
-             << " bitrate: " << bitrate.load()
+             << " bitrate: " << rate
              << " delay: " << ((inflight[fid].frame_D_sec - current_Dmin) * 1000.0) << " ms\n";
 
         {
@@ -273,7 +261,8 @@ private:
         {
           congested_frames++;
           frames_sent = 0; // reset frames when congestion
-          if (congested_frames >= 3)
+          if (in_drain_phase.load()) {}
+          else if (congested_frames >= 3)
           {
             in_drain_phase.store(true);
             pre_fallback_bitrate.store(0.0);
@@ -295,21 +284,31 @@ private:
 
             mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
           }
-          else
+          else if (congested_frames < 3)
           {
-            pre_fallback_bitrate.store(cur); // save for restore
-            bitrate.store(cur * 0.85);
+            if (congested_frames == 1)
+            {
+              pre_fallback_bitrate.store(rate); // save for restore
+              bitrate.store(rate * 0.85);
+            }
           }
         }
         else
         {
+          if (pre_fallback_bitrate.load() > 0.0) // there was a fallback to 85%
+          {
+            rate = pre_fallback_bitrate.load();
+            bitrate.store(rate);
+            pre_fallback_bitrate.store(0.0); // no pending fallback
+          }
+
           // when previous one was draining phase, skip calculation on this frame and reset to normal
           // for fresh calculation
           if (in_drain_phase.load())
           {
             in_drain_phase.store(false);
             // restore bitrate to the current receiving_rate
-            bitrate.store(min(max(ack->rate, static_cast<double>(PudicaAlgorithm::B_MIN)), static_cast<double>(PudicaAlgorithm::B_MAX)));
+            bitrate.store(min(max(ack->rate, PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX));
 
             congested_frames = 0;
             frames_sent = 0;
@@ -328,6 +327,7 @@ private:
             frames_sent = 0;
             last_frames_reset = now;
           }
+
           double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, bitrate.load());
 
           // if fid <= mi_adjustment_frame, we haven't received the latest feedback; so we'll skip it
@@ -336,7 +336,7 @@ private:
             if (r_tilde <= PudicaAlgorithm::ALPHA)
             {
               double xi = PudicaAlgorithm::GAMMA_MI * (((PudicaAlgorithm::ALPHA + 1.0) / 2.0 - r_tilde) / r_tilde);
-              double new_B = min(max(bitrate.load() * (1.0 + xi), static_cast<double>(PudicaAlgorithm::B_MIN)), static_cast<double>(PudicaAlgorithm::B_MAX));
+              double new_B = min(max(bitrate.load() * (1.0 + xi), PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX);
               bitrate.store(new_B);
             }
             else
