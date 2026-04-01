@@ -253,7 +253,7 @@ private:
 
         {
           lock_guard<mutex> lock(hist_mtx);
-          hist.push_back({r_corr, bitrate.load()});
+          hist.push_back({r_corr, rate});
           if (hist.size() > 12)
             hist.pop_front();
         }
@@ -300,9 +300,10 @@ private:
         }
         else
         {
-          if (pre_fallback_bitrate.load() > 0.0) // there was a fallback to 85%
+          double pre_fall_rate = pre_fallback_bitrate.load();
+          if (pre_fall_rate > 0.0) // there was a fallback to 85%
           {
-            rate = pre_fallback_bitrate.load();
+            rate = pre_fall_rate;
             bitrate.store(rate);
             pre_fallback_bitrate.store(0.0); // no pending fallback
           }
@@ -333,7 +334,7 @@ private:
             last_frames_reset = now;
           }
 
-          double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, bitrate.load());
+          double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, rate);
 
           // if fid <= mi_adjustment_frame, we haven't received the latest feedback; so we'll skip it
           if (fid > mi_adjustment_frame)
