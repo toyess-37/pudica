@@ -11,6 +11,7 @@ SENDER_BIN    = str(_PROJECT_ROOT / "codes" / "sender")
 RECEIVER_BIN  = str(_PROJECT_ROOT / "codes" / "receiver")
 RESULTS_DIR   = _PROJECT_ROOT / "results"
 TRACES_DIR    = _PROJECT_ROOT / "traces"
+FAST_TRACE    = TRACES_DIR / "fast_100mbps.up"
 MAHIMAHI_IP   = "$MAHIMAHI_BASE"
 
 def const_trace(path, bw, secs):
@@ -21,6 +22,10 @@ def const_trace(path, bw, secs):
       f.write(f"{int(t)}\n")
       t += ms_pkt
 
+# Fast link to be used during downlink
+TRACES_DIR.mkdir(exist_ok=True)
+if not FAST_TRACE.exists():
+  const_trace(FAST_TRACE, 100.0, 200.0)
 
 def step_trace(path, bw1, bw2, swap_s, secs):
   with open(path, "w") as f:

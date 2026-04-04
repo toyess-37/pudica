@@ -1,0 +1,33 @@
+# =========================
+# C++ Binaries
+# =========================
+sender
+receiver
+
+# =========================
+# Python Clutter
+# =========================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+venv/
+env/
+.venv/
+env.bak/
+venv.bak/
+
+results/
+traces/
+*.log
+debug_send_*.log
+*.pdf
+*.json
+*.up
+
+# Ignore Mahimahi temporary files or system trash
+.DS_Store
