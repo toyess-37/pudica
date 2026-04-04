@@ -243,7 +243,8 @@ private:
         double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, inflight[fid].probes);
 
         // for wsl -- don't prioritize probe_delays as precise_sleep is still not precise
-        // r_corr = (r_corr - raw_r)*0.1 + raw_r;
+        // uncomment the following line for wsl --- 0.1 is empirical
+        r_corr = (r_corr - raw_r)*0.1 + raw_r;
 
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
