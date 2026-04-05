@@ -25,7 +25,6 @@ results/
 traces/
 *.log
 debug_send_*.log
-*.pdf
 *.json
 *.up
 

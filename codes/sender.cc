@@ -76,7 +76,7 @@ private:
   mutex hist_mtx;
   deque<PudicaAlgorithm::HistorySample> hist; // past 200ms sliding window
 
-  atomic<double> bitrate{0.0};
+  atomic<double> bitrate{PudicaAlgorithm::B_MIN};
   atomic<double> pace_p{1.25};
   atomic<int64_t> d_min{INT64_MAX};
 
@@ -176,7 +176,6 @@ private:
 
     while (running)
     {
-      double rate = bitrate.load();
       double rho = pace_p.load();
       double Dmin = d_min.load();
 
@@ -246,15 +245,16 @@ private:
         // uncomment the following line for wsl --- 0.1 is empirical
         r_corr = (r_corr - raw_r)*0.1 + raw_r;
 
+        double cur_rate = bitrate.load();
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
         cout << "BUR: " << r_corr
-             << " bitrate: " << rate
+             << " bitrate: " << cur_rate
              << " delay: " << ((inflight[fid].frame_D_sec - current_Dmin) * 1000.0) << "\n";
 
         {
           lock_guard<mutex> lock(hist_mtx);
-          hist.push_back({r_corr, rate});
+          hist.push_back({r_corr, cur_rate});
           if (hist.size() > 12)
             hist.pop_front();
         }
@@ -280,8 +280,6 @@ private:
             for (auto const &[id, progress] : inflight)
               inflight_bytes += progress.bytes_sent;
 
-            // double avg_frame_bytes = (cur*125000.0) / 60.0;
-            // double queued_bytes = inflight_frames * avg_frame_bytes;
             double draining_rate = (8.0 * inflight_bytes) / (DRAIN_WINDOW * 1'000'000.0); // Mbps
 
             // B_new = ALPHA * receiving_rate − draining_rate (receiving_rate = ack->rate)
@@ -294,8 +292,8 @@ private:
           {
             if (congested_frames == 1)
             {
-              pre_fallback_bitrate.store(rate); // save for restore
-              bitrate.store(rate * 0.85);
+              pre_fallback_bitrate.store(cur_rate); // save for restore
+              bitrate.store(cur_rate * 0.85);
             }
           }
         }
@@ -304,8 +302,8 @@ private:
           double pre_fall_rate = pre_fallback_bitrate.load();
           if (pre_fall_rate > 0.0) // there was a fallback to 85%
           {
-            rate = pre_fall_rate;
-            bitrate.store(rate);
+            cur_rate = pre_fall_rate;
+            bitrate.store(cur_rate);
             pre_fallback_bitrate.store(0.0); // no pending fallback
           }
 
@@ -335,21 +333,22 @@ private:
             last_frames_reset = now;
           }
 
-          double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, rate);
+          double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, cur_rate);
 
           // if fid <= mi_adjustment_frame, we haven't received the latest feedback; so we'll skip it
           if (fid > mi_adjustment_frame)
           {
             if (r_tilde <= PudicaAlgorithm::ALPHA)
             {
-              double xi = PudicaAlgorithm::GAMMA_MI * (((PudicaAlgorithm::ALPHA + 1.0) / 2.0 - r_tilde) / r_tilde);
-              rate = min(max(rate * (1.0 + xi), PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX);
-              bitrate.store(rate);
+              double safe_r = max(r_tilde, 1e-3); // make sure bur doesn't get near 0
+              double xi = PudicaAlgorithm::GAMMA_MI * (((PudicaAlgorithm::ALPHA + 1.0) / 2.0 - safe_r) / safe_r);
+              cur_rate = min(max(cur_rate * (1.0 + xi), PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX);
+              bitrate.store(cur_rate);
             }
             else
             {
-              rate = PudicaAlgorithm::calculate_next_bitrate(rate, r_tilde, frames_sent);
-              bitrate.store(rate);
+              cur_rate = PudicaAlgorithm::calculate_next_bitrate(cur_rate, r_tilde, frames_sent);
+              bitrate.store(cur_rate);
             }
             mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
           }
