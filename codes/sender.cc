@@ -83,7 +83,7 @@ private:
   std::atomic<uint32_t> pacer_bytes[128]; // how many bytes is pacer() sending in each frame
 
   atomic<bool> in_drain_phase{false};
-  atomic<double> pre_fallback_bitrate{0.0};
+  atomic<double> pre_drain_bitrate{0.0};
 
   uint32_t mi_adjustment_frame = 0; // frame_id when last MI increase was sent
 
@@ -271,7 +271,7 @@ private:
           else if (congested_frames >= 3)
           {
             in_drain_phase.store(true);
-            pre_fallback_bitrate.store(0.0);
+            pre_drain_bitrate.store(0.0);
 
             // draining_rate: extra throughput needed to clear self-queued data within DRAIN_WINDOW.
             constexpr double DRAIN_WINDOW = 0.200; // 200ms then drain
@@ -292,19 +292,19 @@ private:
           {
             if (congested_frames == 1)
             {
-              pre_fallback_bitrate.store(cur_rate); // save for restore
+              pre_drain_bitrate.store(cur_rate); // save for restore
               bitrate.store(cur_rate * 0.85);
             }
           }
         }
         else
         {
-          double pre_fall_rate = pre_fallback_bitrate.load();
+          double pre_fall_rate = pre_drain_bitrate.load();
           if (pre_fall_rate > 0.0) // there was a fallback to 85%
           {
             cur_rate = pre_fall_rate;
             bitrate.store(cur_rate);
-            pre_fallback_bitrate.store(0.0); // no pending fallback
+            pre_drain_bitrate.store(0.0); // no pending drain
           }
 
           // when previous one was draining phase, skip calculation on this frame and reset to normal
@@ -312,8 +312,9 @@ private:
           if (in_drain_phase.load())
           {
             in_drain_phase.store(false);
-            // restore bitrate to the current receiving_rate
-            bitrate.store(min(max(ack->rate, PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX));
+            double recovered = max(ack->rate, pre_drain_bitrate.load()*0.70);
+            // restore bitrate to the current recovered rate (playing safe)
+            bitrate.store(min(max(recovered, PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX));
 
             congested_frames = 0;
             frames_sent = 0;
