@@ -1,0 +1,15 @@
+{
+  "test": "step",
+  "convergence_ms": 0.0,
+  "summary": {
+    "label": "step",
+    "n_frames": 1765,
+    "avg_bitrate": 11.957,
+    "avg_delay": 16.687,
+    "p95_delay": 18.59,
+    "p99_delay": 56.705,
+    "stall_100ms": 0.0,
+    "stall_200ms": 0.0,
+    "avg_bur": 1.0114
+  }
+}

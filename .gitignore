@@ -21,11 +21,10 @@ env/
 env.bak/
 venv.bak/
 
-results/
 traces/
 *.log
 debug_send_*.log
-*.json
+# *.json
 *.up
 
 # Ignore Mahimahi temporary files or system trash

@@ -1,0 +1,17 @@
+{
+  "test": "cubic",
+  "pudica_avg_br": 13.236,
+  "cubic_thput": 8.459,
+  "pudica_share": 0.6101,
+  "summary": {
+    "label": "pudica_vs_cubic",
+    "n_frames": 1718,
+    "avg_bitrate": 13.236,
+    "avg_delay": 175.437,
+    "p95_delay": 253.329,
+    "p99_delay": 256.337,
+    "stall_100ms": 0.776,
+    "stall_200ms": 0.679,
+    "avg_bur": 10.5387
+  }
+}

@@ -69,7 +69,6 @@ def run(args):
           print(f"\n[!] CRITICAL ERROR: Flow {idx} failed to send data.\nRAW LOG:\n{raw_log}")
         flow_data.append(data)
 
-  # 5. Summarize and Plot
   summaries = [summarise(*fd, label=f"flow_{i}") for i, fd in enumerate(flow_data)]
   fairness = jains_fairness([fd[1] for fd in flow_data])
 
