@@ -1,8 +1,8 @@
-#include "pudica_algo.h"
 #include <algorithm>
 #include <iostream>
 #include <cmath>
 #include <deque>
+#include "pudica_algo.h"
 
 namespace PudicaAlgorithm
 {
@@ -62,13 +62,13 @@ namespace PudicaAlgorithm
     double new_B = current_B;
 
     /*
-      this does not take into consideration the "postponed until feedback" of the paper.
+      this does not take into consideration the "postponed until feedback received" of the paper.
       it is handled inside the listener() thread of sender.cc
     */
     if (R_tilde <= ALPHA)
     {
-      // MI: xi = gamma * (( (1+alpha)/2 - R_tilde ) / R_tilde)
-      double xi = GAMMA_MI * (((ALPHA + 1.0) / 2.0 - R_tilde) / R_tilde);
+      // MI: xi = gamma_mi * (( (1+alpha)/2 - R_tilde ) / R_tilde)
+      double xi = GAMMA_MI * ((1.0 + ALPHA) / (2.0 * R_tilde) - 1);
       new_B = current_B * (1.0 + xi);
     }
     else if (R_tilde <= 1.0)

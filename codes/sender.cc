@@ -14,7 +14,6 @@
 #include <unistd.h>
 #include "protocol.h"
 #include "pudica_algo.h"
-
 using namespace std;
 using namespace std::chrono;
 
@@ -27,14 +26,14 @@ uint64_t now_microsecs()
   uses the idea of precise_sleep from:
   https://blog.bearcats.nl/accurate-sleep-function/
   (tl;dr - dynamically updates the guess of OS delay
-         - sleeps for that much time only while also ensuring low cpu usage)
+         - sleeps for that much time only, while also ensuring low cpu usage)
   [the blog post explains various sleep methods in detail]
 */
 void precise_sleep(double microsecs)
 {
   double seconds = microsecs / 1000000.0;
 
-  static double estimate = 5e-3; // initial guess of OS wakeup delay --> 5ms
+  static double estimate = 5e-3;
   static double mean = 5e-3;
   static double m2 = 0;
   static int64_t count = 1;
@@ -76,9 +75,9 @@ private:
   mutex hist_mtx;
   deque<PudicaAlgorithm::HistorySample> hist; // past 200ms sliding window
 
-  atomic<double> bitrate{PudicaAlgorithm::B_MIN};
-  atomic<double> pace_p{1.25};
-  atomic<int64_t> d_min{INT64_MAX};
+  atomic<double> bitrate{PudicaAlgorithm::B_MIN}; // start from minimum bitrate
+  atomic<double> pace_p{1.25};                    // pace multiplier, rho --- initially 1.25
+  atomic<int64_t> d_min{INT64_MAX};               // minimum one-way delay
 
   std::atomic<uint32_t> pacer_bytes[128]; // how many bytes is pacer() sending in each frame
 
@@ -243,7 +242,7 @@ private:
 
         // for wsl -- don't prioritize probe_delays as precise_sleep is still not precise
         // uncomment the following line for wsl --- 0.1 is empirical
-        r_corr = (r_corr - raw_r)*0.1 + raw_r;
+        r_corr = (r_corr - raw_r) * 0.1 + raw_r;
 
         double cur_rate = bitrate.load();
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
@@ -264,7 +263,7 @@ private:
         {
           congested_frames++;
           frames_sent = 0; // reset frames when congestion
-          if (in_drain_phase.load()) 
+          if (in_drain_phase.load())
           {
             // do nothing; eat chocolate
           }
@@ -273,7 +272,7 @@ private:
             in_drain_phase.store(true);
             pre_drain_bitrate.store(0.0);
 
-            // draining_rate: extra throughput needed to clear self-queued data within DRAIN_WINDOW.
+            // draining_rate
             constexpr double DRAIN_WINDOW = 0.200; // 200ms then drain
 
             double inflight_bytes = 0;
@@ -312,7 +311,7 @@ private:
           if (in_drain_phase.load())
           {
             in_drain_phase.store(false);
-            double recovered = max(ack->rate, pre_drain_bitrate.load()*0.70);
+            double recovered = max(ack->rate, pre_drain_bitrate.load() * 0.70);
             // restore bitrate to the current recovered rate (playing safe)
             bitrate.store(min(max(recovered, PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX));
 
@@ -403,6 +402,7 @@ public:
 
 int main(int argc, char *argv[])
 {
+  cout << unitbuf;
   if (argc != 3)
   {
     cerr << "Usage: " << argv[0] << " <ip> <port>\n";
