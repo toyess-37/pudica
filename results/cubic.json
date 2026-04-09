@@ -1,17 +1,17 @@
 {
   "test": "cubic",
-  "pudica_avg_br": 13.236,
-  "cubic_thput": 8.459,
-  "pudica_share": 0.6101,
+  "pudica_avg_br": 4.195,
+  "cubic_thput": 17.323,
+  "pudica_share": 0.1949,
   "summary": {
     "label": "pudica_vs_cubic",
-    "n_frames": 1718,
-    "avg_bitrate": 13.236,
-    "avg_delay": 175.437,
-    "p95_delay": 253.329,
-    "p99_delay": 256.337,
-    "stall_100ms": 0.776,
-    "stall_200ms": 0.679,
-    "avg_bur": 10.5387
+    "n_frames": 1739,
+    "avg_bitrate": 4.195,
+    "avg_delay": 187.592,
+    "p95_delay": 265.797,
+    "p99_delay": 269.275,
+    "stall_100ms": 0.801,
+    "stall_200ms": 0.689,
+    "avg_bur": 10.6531
   }
 }

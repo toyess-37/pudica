@@ -5,7 +5,7 @@ from pathlib import Path
 from utils import (
   TRACES_DIR, RECEIVER_BIN, SENDER_BIN, MAHIMAHI_IP, 
   const_trace, find_free_port, cleanup, parse_log, 
-  summarise, save, plot_single, bar_metric
+  summarise, save, plot_single
 )
 
 # launching pudica and cubic together
@@ -64,7 +64,7 @@ def run(args):
   share = pudica_avg / (pudica_avg + cubic_thput) if (pudica_avg + cubic_thput) > 0 else 0
   s = summarise(burs, bitrates, delays, label="pudica_vs_cubic")
 
-  print(f"\n[CUBIC] Pudica avg={pudica_avg:.2f} Mbps\t\tCubic={cubic_thput:.2f} Mbps\ttPudica share={share*100:.1f}%")
+  print(f"\n[CUBIC] Pudica avg={pudica_avg:.2f} Mbps\t\tCubic={cubic_thput:.2f} Mbps\tPudica share={share*100:.1f}%")
   out = save({"test": "cubic", "pudica_avg_br": round(pudica_avg, 3), "cubic_thput": round(cubic_thput, 3), "pudica_share": round(share, 4), "summary": s}, "cubic")
 
   if args.plot:

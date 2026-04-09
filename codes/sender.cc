@@ -79,7 +79,9 @@ private:
   atomic<double> pace_p{1.25};                    // pace multiplier, rho --- initially 1.25
   atomic<int64_t> d_min{INT64_MAX};               // minimum one-way delay
 
-  std::atomic<uint32_t> pacer_bytes[128]; // how many bytes is pacer() sending in each frame
+  atomic<int64_t> rtt_min{INT64_MAX}; // rtt_min to show delay
+
+  atomic<uint32_t> pacer_bytes[128]; // how many bytes is pacer() sending in each frame
 
   atomic<bool> in_drain_phase{false};
   atomic<double> pre_drain_bitrate{0.0};
@@ -166,9 +168,11 @@ private:
       uint64_t first_send = 0; // send time of first packet of frame (microsecs)
       uint64_t last_recv = 0;  // recv time of last packet of frame (microsecs)
       uint32_t bytes_sent = 0; // how many bytes the pacer sent for a particular frame
+      int32_t hist_idx = -1;
       bool has_first = false;
       bool has_last = false;
       bool is_done = false;
+      bool logic_applied = false;
       vector<double> probes;
     };
     map<uint32_t, FrameProgress> inflight;
@@ -185,11 +189,12 @@ private:
       RecvACK *ack = reinterpret_cast<RecvACK *>(buf);
       uint32_t fid = ack->frame_id;
 
-      if (fid > 5 && (ack->flags & IS_FIRST)) // reset only on frame boundary
-        inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
-
       if (inflight.find(fid) == inflight.end()) // update it when we first see the frame fid
         inflight[fid].bytes_sent = pacer_bytes[fid % 128].load(memory_order_relaxed);
+
+      int64_t current_rtt = now_microsecs() - ack->echoed_send;
+      if (current_rtt < rtt_min.load())
+        rtt_min.store(current_rtt);
 
       // one-way delay (microseconds) and Dmin
       int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
@@ -228,7 +233,7 @@ private:
         inflight[fid].probes.push_back(t_i);
       }
 
-      if (!inflight[fid].is_done && inflight[fid].has_first && inflight[fid].has_last && inflight[fid].probes.size() == N_PROBE)
+      if (inflight[fid].has_first && inflight[fid].has_last && inflight[fid].probes.size() >= 1)
       {
         inflight[fid].is_done = true;
 
@@ -240,121 +245,137 @@ private:
         double raw_r = PudicaAlgorithm::raw_BUR(inflight[fid].frame_D_sec, current_Dmin);
         double r_corr = PudicaAlgorithm::corrected_BUR(raw_r, inflight[fid].probes);
 
-        // for wsl -- don't prioritize probe_delays as precise_sleep is still not precise
-        // uncomment the following line for wsl --- 0.1 is empirical
-        r_corr = (r_corr - raw_r) * 0.1 + raw_r;
-
         double cur_rate = bitrate.load();
         pace_p.store(PudicaAlgorithm::pacing_multiplier(r_corr));
 
+        // delay reporting
+        double propagation = (rtt_min.load() / 2000.0);                       // (rtt_min/2) in seconds
+        double queuing = (inflight[fid].frame_D_sec - current_Dmin) * 1000.0; // queuing in ms
+
         cout << "BUR: " << r_corr
              << " bitrate: " << cur_rate
-             << " delay: " << ((inflight[fid].frame_D_sec - current_Dmin) * 1000.0) << "\n";
+             << " delay: " << (propagation + queuing) << "\n";
 
         {
           lock_guard<mutex> lock(hist_mtx);
-          hist.push_back({r_corr, cur_rate});
-          if (hist.size() > 12)
-            hist.pop_front();
+          if (!inflight[fid].logic_applied)
+          {
+            hist.push_back({r_corr, cur_rate});
+            if (hist.size() > 12)
+              hist.pop_front();
+            inflight[fid].hist_idx = (int)hist.size() - 1;
+          }
+          else if (inflight[fid].hist_idx >= 0 && inflight[fid].hist_idx < (int)hist.size())
+          {
+            hist[inflight[fid].hist_idx].R_k = r_corr;
+          }
         }
 
-        // adaptive AI-MD bitrate adjustment
-        if (r_corr > 1.0)
+        if (!inflight[fid].logic_applied)
         {
-          congested_frames++;
-          frames_sent = 0; // reset frames when congestion
-          if (in_drain_phase.load())
+          inflight[fid].logic_applied = true;
+          // adaptive AI-MD bitrate adjustment
+          if (r_corr > 1.0)
           {
-            // do nothing; eat chocolate
-          }
-          else if (congested_frames >= 3)
-          {
-            in_drain_phase.store(true);
-            pre_drain_bitrate.store(0.0);
-
-            // draining_rate
-            constexpr double DRAIN_WINDOW = 0.200; // 200ms then drain
-
-            double inflight_bytes = 0;
-            for (auto const &[id, progress] : inflight)
-              inflight_bytes += progress.bytes_sent;
-
-            double draining_rate = (8.0 * inflight_bytes) / (DRAIN_WINDOW * 1'000'000.0); // Mbps
-
-            // B_new = ALPHA * receiving_rate − draining_rate (receiving_rate = ack->rate)
-            double new_B = PudicaAlgorithm::ALPHA * ack->rate - draining_rate;
-            bitrate.store(max(new_B, PudicaAlgorithm::B_MIN));
-
-            mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
-          }
-          else if (congested_frames < 3)
-          {
-            if (congested_frames == 1)
+            congested_frames++;
+            frames_sent = 0; // reset frames when congestion
+            if (in_drain_phase.load())
             {
-              pre_drain_bitrate.store(cur_rate); // save for restore
-              bitrate.store(cur_rate * 0.85);
+              // do nothing; eat chocolate
+            }
+            else if (congested_frames >= 3)
+            {
+              in_drain_phase.store(true);
+              pre_drain_bitrate.store(0.0);
+
+              // draining_rate
+              constexpr double DRAIN_WINDOW = 0.200; // 200ms then drain
+
+              double inflight_bytes = 0;
+              for (auto const &[id, progress] : inflight)
+                inflight_bytes += progress.bytes_sent;
+
+              double draining_rate = (8.0 * inflight_bytes) / (DRAIN_WINDOW * 1'000'000.0); // Mbps
+
+              // B_new = ALPHA * receiving_rate − draining_rate (receiving_rate = ack->rate)
+              double new_B = PudicaAlgorithm::ALPHA * ack->rate - draining_rate;
+              bitrate.store(max(new_B, PudicaAlgorithm::B_MIN));
+
+              mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
+            }
+            else if (congested_frames < 3)
+            {
+              if (congested_frames == 1)
+              {
+                pre_drain_bitrate.store(cur_rate); // save for restore
+                bitrate.store(cur_rate * 0.85);
+              }
             }
           }
-        }
-        else
-        {
-          double pre_fall_rate = pre_drain_bitrate.load();
-          if (pre_fall_rate > 0.0) // there was a fallback to 85%
+          else
           {
-            cur_rate = pre_fall_rate;
-            bitrate.store(cur_rate);
-            pre_drain_bitrate.store(0.0); // no pending drain
-          }
+            double pre_fall_rate = pre_drain_bitrate.load();
+            if (pre_fall_rate > 0.0) // there was a fallback to 85%
+            {
+              cur_rate = pre_fall_rate;
+              bitrate.store(cur_rate);
+              pre_drain_bitrate.store(0.0); // no pending drain
+            }
 
-          // when previous one was draining phase, skip calculation on this frame and reset to normal
-          // for fresh calculation
-          if (in_drain_phase.load())
-          {
-            in_drain_phase.store(false);
-            double recovered = max(ack->rate, pre_drain_bitrate.load() * 0.70);
-            // restore bitrate to the current recovered rate (playing safe)
-            bitrate.store(min(max(recovered, PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX));
+            // when previous one was draining phase, skip calculation on this frame and reset to normal
+            // for fresh calculation
+            if (in_drain_phase.load())
+            {
+              in_drain_phase.store(false);
+              double recovered = max(ack->rate, PudicaAlgorithm::B_MIN);
+              recovered = min(recovered, PudicaAlgorithm::B_MAX);
+              // restore bitrate to the current recovered rate (playing safe)
+              bitrate.store(recovered);
 
+              congested_frames = 0;
+              frames_sent = 0;
+              // skip the normal MI/AI-MD update this frame
+              mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
+              inflight.erase(fid);
+              continue;
+            }
             congested_frames = 0;
-            frames_sent = 0;
-            // skip the normal MI/AI-MD update this frame
-            mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
-            inflight.erase(fid);
-            continue;
-          }
-          congested_frames = 0;
-          frames_sent++;
-          uint64_t now = now_microsecs();
-          if (last_frames_reset == 0)
-            last_frames_reset = now;
-          if (now - last_frames_reset >= 5'000'000ULL)
-          {
-            frames_sent = 0;
-            last_frames_reset = now;
-          }
-
-          double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, cur_rate);
-
-          // if fid <= mi_adjustment_frame, we haven't received the latest feedback; so we'll skip it
-          if (fid > mi_adjustment_frame)
-          {
-            if (r_tilde <= PudicaAlgorithm::ALPHA)
+            frames_sent++;
+            uint64_t now = now_microsecs();
+            if (last_frames_reset == 0)
+              last_frames_reset = now;
+            if (now - last_frames_reset >= 5'000'000ULL)
             {
-              double safe_r = max(r_tilde, 1e-3); // make sure bur doesn't get near 0
-              double xi = PudicaAlgorithm::GAMMA_MI * (((PudicaAlgorithm::ALPHA + 1.0) / 2.0 - safe_r) / safe_r);
-              cur_rate = min(max(cur_rate * (1.0 + xi), PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX);
-              bitrate.store(cur_rate);
+              frames_sent = 0;
+              last_frames_reset = now;
             }
-            else
+
+            double r_tilde = PudicaAlgorithm::smoothed_BUR(hist, cur_rate);
+
+            // if fid <= mi_adjustment_frame, we haven't received the latest feedback; so we'll skip it
+            if (fid > mi_adjustment_frame)
             {
-              cur_rate = PudicaAlgorithm::calculate_next_bitrate(cur_rate, r_tilde, frames_sent);
-              bitrate.store(cur_rate);
+              if (r_tilde <= PudicaAlgorithm::ALPHA)
+              {
+                double safe_r = max(r_tilde, 0.01); // make sure bur doesn't get near 0
+                double xi = PudicaAlgorithm::GAMMA_MI * (((PudicaAlgorithm::ALPHA + 1.0) / 2.0 - safe_r) / safe_r);
+                cur_rate = min(max(cur_rate * (1.0 + xi), PudicaAlgorithm::B_MIN), PudicaAlgorithm::B_MAX);
+                bitrate.store(cur_rate);
+              }
+              else
+              {
+                cur_rate = PudicaAlgorithm::calculate_next_bitrate(cur_rate, r_tilde, frames_sent);
+                bitrate.store(cur_rate);
+              }
+              mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
             }
-            mi_adjustment_frame = fid + static_cast<uint32_t>(inflight.size());
           }
+          inflight.erase(fid);
         }
-        inflight.erase(fid);
       }
+
+      if (fid > 5)
+        inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
     }
   }
 
@@ -402,7 +423,6 @@ public:
 
 int main(int argc, char *argv[])
 {
-  cout << unitbuf;
   if (argc != 3)
   {
     cerr << "Usage: " << argv[0] << " <ip> <port>\n";

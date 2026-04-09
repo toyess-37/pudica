@@ -4,7 +4,7 @@ from pathlib import Path
 import matplotlib
 import matplotlib.pyplot as plt
 from utils import (
-  TRACES_DIR, FAST_TRACE, RECEIVER_BIN, SENDER_BIN, MAHIMAHI_IP, 
+  TRACES_DIR, RECEIVER_BIN, SENDER_BIN, MAHIMAHI_IP, 
   const_trace, find_free_port, cleanup, parse_log, save
 )
 
@@ -30,7 +30,7 @@ def run(args):
         inner_cmd = f"{SENDER_BIN} {MAHIMAHI_IP} {port} > {send_lf} 2>&1"
         mm_cmd = (f"mm-delay {args.rtt // 2} "
                   f"mm-link --uplink-queue=droptail --uplink-queue-args=packets=500 "
-                  f"{trace} {FAST_TRACE} -- bash -c '{inner_cmd}'")
+                  f"{trace} {trace} -- bash -c '{inner_cmd}'")
         procs.append(subprocess.Popen(mm_cmd, shell=True))
         
         time.sleep(args.dur + 2)

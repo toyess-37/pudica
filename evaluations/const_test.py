@@ -30,8 +30,6 @@ def run(args):
       print(f"[!] Receiver crashed immediately with code {recv_proc.returncode}")
       return
 
-    # 4. Start Sender inside Mahimahi
-    # We use $MAHIMAHI_BASE dynamically to prevent hardcoded IP blackholes.
     inner_cmd = f"{SENDER_BIN} {MAHIMAHI_IP} {port} > {send_lf} 2>&1"
     mm_cmd = f"mm-delay {args.rtt // 2} mm-link {trace} {trace} -- bash -c '{inner_cmd}'"
     
