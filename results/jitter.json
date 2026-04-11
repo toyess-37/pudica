@@ -3,13 +3,13 @@
   "jitter_ms": 40,
   "summary": {
     "label": "jitter",
-    "n_frames": 1085,
-    "avg_bitrate": 5.176,
-    "avg_delay": 23.339,
-    "p95_delay": 44.173,
-    "p99_delay": 58.504,
+    "n_frames": 1080,
+    "avg_bitrate": 5.781,
+    "avg_delay": 23.207,
+    "p95_delay": 43.103,
+    "p99_delay": 58.488,
     "stall_100ms": 0.0,
     "stall_200ms": 0.0,
-    "avg_bur": 0.8252
+    "avg_bur": 0.8177
   }
 }

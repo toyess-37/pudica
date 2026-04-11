@@ -1,40 +1,40 @@
 {
   "test": "fairness",
   "bw_mbps": 30,
-  "jains_index": 0.998,
+  "jains_index": 0.999,
   "per_flow": [
     {
       "label": "flow_0",
-      "n_frames": 1722,
-      "avg_bitrate": 12.079,
-      "avg_delay": 25.305,
-      "p95_delay": 28.356,
-      "p99_delay": 30.339,
+      "n_frames": 2583,
+      "avg_bitrate": 11.426,
+      "avg_delay": 25.484,
+      "p95_delay": 28.339,
+      "p99_delay": 30.982,
       "stall_100ms": 0.0,
       "stall_200ms": 0.0,
-      "avg_bur": 0.9262
+      "avg_bur": 0.9366
     },
     {
       "label": "flow_1",
-      "n_frames": 1739,
-      "avg_bitrate": 11.551,
-      "avg_delay": 25.429,
-      "p95_delay": 28.8,
-      "p99_delay": 30.79,
+      "n_frames": 2575,
+      "avg_bitrate": 10.944,
+      "avg_delay": 25.608,
+      "p95_delay": 28.54,
+      "p99_delay": 30.785,
       "stall_100ms": 0.0,
       "stall_200ms": 0.0,
-      "avg_bur": 0.9291
+      "avg_bur": 0.9386
     },
     {
       "label": "flow_2",
-      "n_frames": 1731,
-      "avg_bitrate": 12.789,
-      "avg_delay": 25.22,
-      "p95_delay": 27.989,
-      "p99_delay": 30.066,
+      "n_frames": 2559,
+      "avg_bitrate": 10.393,
+      "avg_delay": 25.79,
+      "p95_delay": 28.627,
+      "p99_delay": 31.072,
       "stall_100ms": 0.0,
       "stall_200ms": 0.0,
-      "avg_bur": 0.9185
+      "avg_bur": 0.9478
     }
   ]
 }
