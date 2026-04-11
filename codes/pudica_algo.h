@@ -7,18 +7,18 @@
 
 namespace PudicaAlgorithm
 {
-  constexpr double L_SEC = 16666.0 / 1'000'000.0;                                          // 60fps
-  constexpr double GAMMA_P = 1.25;                                                         // (sec:4.1) pacing
-  constexpr double ALPHA = 0.85;                                                           // (sec:4.1) threshold for MI vs AI-MD
-  constexpr double GAMMA_MI = 0.3;                                                         // (sec:4.1) discounting coefficient for MI
-  constexpr double GAMMA_MD = 0.05;                                                        // (sec:4.1) MD param for AI-MD
-  constexpr double B_MAX = 50.0;                                                           // (sec:4.1) maximum bitrate in Mbps
-  constexpr double B_MIN = 1.0;                                                            // (sec:4.1) minimum bitrate in Mbps
-  constexpr double A_MIN = -1.0;                                                           // (sec:4.2) lower bound capping A
-  constexpr double A_MAX = 2.0;                                                            // (sec:4.2) upper bound capping A
-  constexpr double ZETA = 0.15;                                                            // (sec:4.3) temporary fallback fraction
-  constexpr double DRAIN_WIN = 0.200;                                                      // (sec:4.3) queue-drain window (secs)
-  constexpr uint64_t NEXT_DELAY_THRESH = static_cast<uint64_t>(2.0 * L_SEC * 1'000'000.0); // after 2 frame duration, ignore the oldest in-flight frame
+  constexpr double L_SEC = 16666.0 / 1'000'000.0;                                  // 60fps
+  constexpr double GAMMA_P = 1.25;                                                 // (sec:4.1) pacing
+  constexpr double ALPHA = 0.85;                                                   // (sec:4.1) threshold for MI vs AI-MD
+  constexpr double GAMMA_MI = 0.3;                                                 // (sec:4.1) discounting coefficient for MI
+  constexpr double GAMMA_MD = 0.05;                                                // (sec:4.1) MD param for AI-MD
+  constexpr double B_MAX = 50.0;                                                   // (sec:4.1) maximum bitrate in Mbps
+  constexpr double B_MIN = 1.0;                                                    // (sec:4.1) minimum bitrate in Mbps
+  constexpr double A_MIN = -1.0;                                                   // (sec:4.2) lower bound capping A
+  constexpr double A_MAX = 2.0;                                                    // (sec:4.2) upper bound capping A
+  constexpr double ZETA = 0.15;                                                    // (sec:4.3) temporary fallback fraction
+  constexpr double DRAIN_WIN = 0.200;                                              // (sec:4.3) queue-drain window (secs)
+  constexpr uint64_t NEXT_DELAY_THRESH = static_cast<uint64_t>(2.0 * L_SEC * 1e6); // after 2 frame duration, ignore the oldest in-flight frame
 
   struct Sample
   {
