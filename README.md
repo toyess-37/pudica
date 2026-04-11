@@ -1,10 +1,37 @@
 # pudica
-An educational (and unofficial) reproduction of Pudica, a congestion control algorithm for cloud gaming presented at USENIX NSDI 2024.
+An educational (and unofficial) reproduction of Pudica, a custom UDP-based congestion control algorithm for cloud gaming presented at USENIX NSDI 2024.
 
 ## NOTE
-The official source code for Pudica (NSDI '24) has **not** been released publicly.
+The official source code for Pudica (NSDI '24) has not been released publicly.
+This implementation follows the paper:
 
-This implementation is based on the logic described in the original paper:
-> *Pudica: Toward Near-Zero Queuing Delay in Congestion Control for Cloud Gaming*
+> [*Pudica: Toward Near-Zero Queuing Delay in Congestion Control for Cloud Gaming*](https://www.usenix.org/conference/nsdi24/presentation/wang-shibo)
 > 
 > Wang et al., USENIX NSDI 2024.
+
+## Files
+- `pudica_algo.cc` and `pudica_algo.h`: core Pudica control algorithm.
+- `sender.cc`: UDP sender with pacing and congestion control logic.
+- `receiver.cc`: UDP receiver with ACK echoing and receive-rate calculation.
+- `protocol.h`: shared packet and ACK structures.
+
+## Build
+Run:
+```bash
+cd codes
+make
+```
+This builds the sender and receiver executable files in the codes directory.
+
+## Usage
+Start receiver first, then sender.
+
+Receiver:
+```bash
+./receiver <port>
+```
+
+Sender:
+```bash
+./sender <ip> <port> <duration_sec>
+```
