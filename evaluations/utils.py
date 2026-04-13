@@ -10,7 +10,7 @@ SENDER_BIN   = str(_ROOT / "codes" / "sender")
 RECEIVER_BIN = str(_ROOT / "codes" / "receiver")
 RESULTS_DIR  = _ROOT / "results"
 TRACES_DIR   = _ROOT / "traces"
-MAHIMAHI_IP  = "$MAHIMAHI_BASE"
+TARGET_IP    = "$MAHIMAHI_BASE" # when testing between 2 machines, use IP of that device
 
 
 def const_trace(path, bw, secs):
@@ -71,6 +71,16 @@ def cleanup(procs):
       p.terminate()
       p.wait()
 
+def make_script(path, cmds):
+  """write cmds (list of shell command strings) to a runnable sh script."""
+  s = Path(path) / "run.sh"
+  s.write_text("#!/bin/sh\n" + "\n".join(cmds) + "\n")
+  s.chmod(0o755)
+  return s
+
+def sender_cmd(port, dur, log):
+  return f'{SENDER_BIN} {TARGET_IP} {port} {dur} > {log} 2>&1'
+
 # smooth curves by convolving the jittery network traces
 def smooth(d, window=10):
   if window <= 1 or len(d) < window: return d
@@ -88,7 +98,7 @@ def plot_single(burs, bitrates, delays, title="", out_pdf="out.pdf", window=10):
     print("[error] no data to plot"); return
 
   t = [i * 16.67 for i in range(len(bitrates))]
-  fig, (a1, a2, a3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+  fig, (a1, a2, a3) = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
   fig.suptitle(title, fontsize=13, fontweight="bold")
 
   for ax, data, label, color in [

@@ -3,8 +3,9 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 from utils import (
-  TRACES_DIR, RECEIVER_BIN, SENDER_BIN, MAHIMAHI_IP,
-  const_trace, cleanup, parse_log, save
+  TRACES_DIR, RECEIVER_BIN,
+  const_trace, cleanup, parse_log, save,
+  make_script, sender_cmd
 )
 
 def run_bur(args):
@@ -17,7 +18,8 @@ def run_bur(args):
     const_trace(trace, bw, args.dur)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-      send_lf = Path(tmpdir) / "send.log"
+      tmp = Path(tmpdir)
+      send_lf = tmp / "send.log"
       procs = []
       try:
         procs.append(subprocess.Popen(
@@ -25,17 +27,16 @@ def run_bur(args):
           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         ))
         time.sleep(0.3)
-        inner = f"{SENDER_BIN} {MAHIMAHI_IP} {args.port} {args.dur} > {send_lf} 2>&1"
+        script = make_script(tmp, [sender_cmd(args.port, args.dur, send_lf)])
         mm_cmd = (
           f"mm-delay {args.rtt // 2} "
           f"mm-link --uplink-queue=droptail --uplink-queue-args=packets=500 "
-          f"{trace} {trace} -- bash -c '{inner}'"
+          f"{trace} {trace} -- {script}"
         )
         procs.append(subprocess.Popen(mm_cmd, shell=True))
         time.sleep(args.dur + 2)
       finally:
         cleanup(procs)
-
       burs, bitrates, _ = parse_log(send_lf.read_text() if send_lf.exists() else "")
 
     tail    = burs[int(len(burs) * 0.6):] if len(burs) > 10 else burs

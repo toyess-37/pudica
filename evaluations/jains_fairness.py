@@ -3,8 +3,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from utils import (
-  TRACES_DIR, RECEIVER_BIN, SENDER_BIN, MAHIMAHI_IP,
-  const_trace, cleanup, parse_log, summarise, save, smooth
+  TRACES_DIR, RECEIVER_BIN,
+  const_trace, cleanup, parse_log, summarise, 
+  save, smooth, make_script, sender_cmd
 )
 
 # calculate Jains fairness index
@@ -17,7 +18,7 @@ def jains_fairness(bitrates_per_flow):
 def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=10, out_pdf="fairness.pdf"):
   colors = plt.cm.tab10.colors
 
-  fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+  fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
   fig.suptitle(f"{title}  |  Jain's index = {fairness:.3f}",
                fontsize=13, fontweight="bold")
 
@@ -46,7 +47,7 @@ def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=1
   axes[2].set_ylabel("BUR",            fontweight="bold")
   axes[2].axhline(1.0,  color="black", ls="--", lw=1.5, label="BUR=1.0")
   axes[2].axhline(0.85, color="gray",  ls=":",  lw=1.2, label="alpha=0.85")
-  axes[2].set_xlabel("timeline (ms)", fontweight="bold")
+  axes[2].set_xlabel("timeline", fontweight="bold")
 
   # x-axis ticks in seconds for readability
   total_ms = (dur_s + stagger_s * max(0, len(flow_data) - 1)) * 1000
@@ -88,16 +89,10 @@ def run(args):
       for i in range(args.flows):
         port = args.port + i
         delay = f"sleep {i * args.stagger} && " if i > 0 and args.stagger else ""
-        cmds.append(
-          f"({delay}{SENDER_BIN} {MAHIMAHI_IP} {port} {args.dur} > {send_logs[i]} 2>&1) &"
-        )
-      inner = " ".join(cmds) + " wait;"
-
-      mm_cmd = (
-        f"mm-delay {args.rtt // 2} "
-        f"mm-link {trace} {trace} "
-        f"-- bash -c '{inner}'"
-      )
+        cmds.append(f"({delay}{sender_cmd(port, args.dur, send_logs[i])}) &")
+      cmds.append("wait")
+      script = make_script(tmp, cmds)
+      mm_cmd = (f"mm-delay {args.rtt // 2} mm-link {trace} {trace} -- {script}")
       procs.append(subprocess.Popen(mm_cmd, shell=True))
       time.sleep(total_dur + 3)
 

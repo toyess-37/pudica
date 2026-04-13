@@ -13,7 +13,7 @@ namespace PudicaAlgorithm
   constexpr double GAMMA_MI = 0.3;                                                 // (sec:4.1) discounting coefficient for MI
   constexpr double GAMMA_MD = 0.05;                                                // (sec:4.1) MD param for AI-MD
   constexpr double B_MAX = 50.0;                                                   // (sec:4.1) maximum bitrate in Mbps
-  constexpr double B_MIN = 1.0;                                                    // (sec:4.1) minimum bitrate in Mbps
+  constexpr double B_MIN = 0.2;                                                    // (sec:4.1) minimum bitrate in Mbps --- changed it from 1.0 to 0.2 for mahimahi inbuilt traces
   constexpr double A_MIN = -1.0;                                                   // (sec:4.2) lower bound capping A
   constexpr double A_MAX = 2.0;                                                    // (sec:4.2) upper bound capping A
   constexpr double ZETA = 0.15;                                                    // (sec:4.3) temporary fallback fraction

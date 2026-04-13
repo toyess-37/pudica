@@ -1,8 +1,9 @@
 import argparse, subprocess, time, tempfile
 from pathlib import Path
 from utils import (
-  TRACES_DIR, RECEIVER_BIN, SENDER_BIN, MAHIMAHI_IP, PKT_BITS,
-  cleanup, parse_log, summarise, save, plot_single
+  TRACES_DIR, RECEIVER_BIN, PKT_BITS,
+  cleanup, parse_log, summarise, save, plot_single,
+  make_script, sender_cmd
 )
 
 def run_jitter(args):
@@ -28,8 +29,8 @@ def run_jitter(args):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
       ))
       time.sleep(0.3)
-      inner = f"{SENDER_BIN} {MAHIMAHI_IP} {args.port} {args.dur} > {send_lf} 2>&1"
-      mm_cmd = f"mm-delay {args.rtt // 2} mm-link {trace} {trace} -- bash -c '{inner}'"
+      script = make_script(tmpdir, [sender_cmd(args.port, args.dur, send_lf)])
+      mm_cmd = f"mm-delay {args.rtt // 2} mm-link {trace} {trace} -- {script}"
       procs.append(subprocess.Popen(mm_cmd, shell=True))
       time.sleep(args.dur + 5)
     finally:
