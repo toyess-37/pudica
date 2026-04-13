@@ -35,3 +35,9 @@ Sender:
 ```bash
 ./sender <ip> <port> <duration_sec>
 ```
+
+TODO:
+1. Make it so that sender runs first and receiver can hop in anytime.
+2. Complete the report/analysis.
+3. Check for logical/deviation errors in the logic of the functions.
+4. Add scripts for default mahimahi tests and the .csv dataset test.
