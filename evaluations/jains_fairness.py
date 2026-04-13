@@ -1,10 +1,68 @@
 import argparse, subprocess, tempfile, time
+import matplotlib.pyplot as plt
+import numpy as np
 from pathlib import Path
 from utils import (
   TRACES_DIR, RECEIVER_BIN, SENDER_BIN, MAHIMAHI_IP,
-  const_trace, cleanup, parse_log, summarise,
-  jains_fairness, save, plot_fairness
+  const_trace, cleanup, parse_log, summarise, save, smooth
 )
+
+# calculate Jains fairness index
+def jains_fairness(bitrates_per_flow):
+  avgs = [np.mean(b) for b in bitrates_per_flow if b]
+  if not avgs: return 0.0
+  n = len(avgs)
+  return (sum(avgs) ** 2) / (n * sum(x ** 2 for x in avgs))
+
+def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=10, out_pdf="fairness.pdf"):
+  colors = plt.cm.tab10.colors
+
+  fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+  fig.suptitle(f"{title}  |  Jain's index = {fairness:.3f}",
+               fontsize=13, fontweight="bold")
+
+  for i, (burs, bitrates, delays) in enumerate(flow_data):
+    if not bitrates: continue
+    c      = colors[i % 10]
+    # offset this flow's frames by its entry time (ms)
+    t0_ms  = i * stagger_s * 1000
+    t      = [t0_ms + j * 16.666 for j in range(len(bitrates))]
+    lbl    = f"flow {i}  (t={i*stagger_s}s-{i*stagger_s+dur_s}s)"
+
+    for ax, data in zip(axes, [bitrates, delays, burs]):
+      ax.plot(t, data, color=c, alpha=0.25, lw=1)
+      ax.plot(t, smooth(data, window), color=c, lw=2, label=lbl)
+
+  # vertical entry markers on all subplots
+  for i in range(len(flow_data)):
+    entry_ms = i * stagger_s * 1000
+    for ax in axes:
+      ax.axvline(entry_ms, color=colors[i % 10],
+                 ls="--", lw=1.2, alpha=0.6,
+                 label=f"flow {i} enters" if ax is axes[0] else "")
+
+  axes[0].set_ylabel("Bitrate (Mbps)", fontweight="bold")
+  axes[1].set_ylabel("Delay (ms)",     fontweight="bold")
+  axes[2].set_ylabel("BUR",            fontweight="bold")
+  axes[2].axhline(1.0,  color="black", ls="--", lw=1.5, label="BUR=1.0")
+  axes[2].axhline(0.85, color="gray",  ls=":",  lw=1.2, label="alpha=0.85")
+  axes[2].set_xlabel("timeline (ms)", fontweight="bold")
+
+  # x-axis ticks in seconds for readability
+  total_ms = (dur_s + stagger_s * max(0, len(flow_data) - 1)) * 1000
+  tick_ms  = [i * 10000 for i in range(int(total_ms/10000) + 2)]
+  axes[2].set_xticks(tick_ms)
+  axes[2].set_xticklabels([f"{int(x/1000)}s" for x in tick_ms])
+  axes[2].set_xlim(0, total_ms)
+
+  for ax in axes:
+    ax.grid(True, ls="--", alpha=0.4)
+    ax.legend(loc="upper right", fontsize=7, ncol=2)
+
+  plt.tight_layout()
+  plt.savefig(out_pdf, dpi="figure", format="pdf")
+  plt.close(fig)
+  print(f"fairness plot: {out_pdf}")
 
 def run(args):
   TRACES_DIR.mkdir(exist_ok=True)
@@ -22,10 +80,7 @@ def run(args):
       # start all receivers on consecutive ports outside mahimahi
       for i in range(args.flows):
         port = args.port + i
-        procs.append(subprocess.Popen(
-          [RECEIVER_BIN, str(port)],
-          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ))
+        procs.append(subprocess.Popen([RECEIVER_BIN, str(port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
       time.sleep(0.4)
 
       # build one inner bash script that staggers sender launches
@@ -74,7 +129,8 @@ def run(args):
   if args.plot:
     plot_fairness(
       flow_data, fairness,
-      title=f"fairness — {args.flows} flows on {args.bw} mbps",
+      stagger_s=args.stagger,
+      title=f"fairness - {args.flows} flows on {args.bw} mbps",
       out_pdf=str(out).replace(".json", ".pdf"),
     )
 
