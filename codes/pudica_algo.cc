@@ -173,7 +173,7 @@ namespace PudicaAlgorithm
   // when the delay > 2 frame intervals, do a fallback
   std::optional<control_output> Controller::on_inflight_age(uint64_t age)
   {
-    if (age >= NEXT_DELAY_THRESH)
+    if (age < NEXT_DELAY_THRESH)
       return std::nullopt;
     if (restore_next || draining)
       return std::nullopt;

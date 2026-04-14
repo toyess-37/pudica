@@ -1,18 +1,18 @@
 {
   "test": "cubic",
-  "buf_pkts": 50,
-  "pudica_avg_mbps": 7.528,
-  "cubic_mbps": 14.074,
-  "pudica_share": 0.3485,
+  "buf_pkts": 7,
+  "pudica_avg_Mbps": 13.789,
+  "cubic_Mbps": 4.986,
+  "pudica_share": 0.7344,
   "summary": {
     "label": "pudica_vs_cubic",
-    "n_frames": 1760,
-    "avg_bitrate": 7.528,
-    "avg_delay": 37.965,
-    "p95_delay": 46.91,
-    "p99_delay": 48.033,
+    "n_frames": 1707,
+    "avg_bitrate": 13.789,
+    "avg_delay": 26.169,
+    "p95_delay": 28.349,
+    "p99_delay": 29.353,
     "stall_100ms": 0.0,
     "stall_200ms": 0.0,
-    "avg_bur": 1.6731
+    "avg_bur": 0.9555
   }
 }
