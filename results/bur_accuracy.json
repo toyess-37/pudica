@@ -3,33 +3,33 @@
   "data": [
     {
       "bw": 5.0,
-      "est_bur": 0.9843,
-      "avg_bitrate": 3.91
+      "est_bur": 0.9338,
+      "avg_bitrate": 3.866
     },
     {
       "bw": 10.0,
-      "est_bur": 0.9854,
-      "avg_bitrate": 8.886
+      "est_bur": 0.9797,
+      "avg_bitrate": 8.639
     },
     {
       "bw": 15.0,
-      "est_bur": 0.9741,
-      "avg_bitrate": 13.306
+      "est_bur": 0.9726,
+      "avg_bitrate": 12.883
     },
     {
       "bw": 20.0,
-      "est_bur": 0.9691,
-      "avg_bitrate": 15.728
+      "est_bur": 0.954,
+      "avg_bitrate": 14.602
     },
     {
       "bw": 25.0,
-      "est_bur": 0.9393,
-      "avg_bitrate": 20.8
+      "est_bur": 0.9125,
+      "avg_bitrate": 15.481
     },
     {
       "bw": 30.0,
-      "est_bur": 0.919,
-      "avg_bitrate": 21.572
+      "est_bur": 0.8844,
+      "avg_bitrate": 18.35
     }
   ]
 }

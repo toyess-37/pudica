@@ -95,9 +95,13 @@ namespace PudicaAlgorithm
       restore_next = false;
     }
 
-    history.push_back({bur_corr, current_bitrate});
-    if (history.size() > 12)
-      history.pop_front(); // reset after 12 frames (200ms on 60fps, but may be sad due to congestion)
+    history.push_back({bur_corr, current_bitrate, fa.now_microsecs});
+
+    // sliding window of 200ms
+    while (!history.empty() && (fa.now_microsecs - history.front().ts) > 200'000ULL)
+    {
+      history.pop_front();
+    }
 
     if (bur_corr > 1.0)
     {
@@ -142,6 +146,7 @@ namespace PudicaAlgorithm
         saved_rate = 0.0;
         current_bitrate = std::min(std::max(fa.recv_rate, B_MIN), B_MAX);
         adj_after = fa.fid + fa.n_inflight;
+        history.clear(); // clear the history when in draining stage
 
         return {current_bitrate, current_pacing, last_bur};
       }

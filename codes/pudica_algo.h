@@ -24,6 +24,7 @@ namespace PudicaAlgorithm
   {
     double bur;  // corrected BUR of the kth frame
     double rate; // bitrate of the kth frame in Mbps
+    uint64_t ts; // timestamp recorded --> for history clearing
   };
 
   struct FrameAck

@@ -77,8 +77,14 @@ private:
   atomic<double> bitrate{PudicaAlgorithm::B_MIN};
   atomic<double> pacing{PudicaAlgorithm::GAMMA_P};
 
+  struct Owd { // for resetting d_min after every 10s
+    uint64_t ts;
+    int64_t owd;
+  };
+  deque<Owd> owd_window;
   atomic<int64_t> d_min{INT64_MAX};
   atomic<int64_t> rtt_min{INT64_MAX};
+
   atomic<uint32_t> pacer_bytes[128]; // bytes sent per frame slot
 
   void pacer()
@@ -167,8 +173,19 @@ private:
       rtt_min.store(min(rtt, rtt_min.load()));
 
       int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
-      if (owd < d_min.load())
-        d_min.store(owd);
+
+      // to maintain a 10s window of updating 
+      uint64_t current_ts = now_microsecs();
+      int64_t cutoff = static_cast<int64_t>(current_ts - 10000000ULL); // 10 seconds in microseconds
+
+      while (!owd_window.empty() && static_cast<int64_t>(owd_window.front().ts) < cutoff) {
+        owd_window.pop_front();
+      }
+      while (!owd_window.empty() && static_cast<int64_t>(owd_window.back().owd) >= owd) {
+        owd_window.pop_back();
+      }
+      owd_window.push_back({current_ts, owd});
+      d_min.store(owd_window.front().owd);
 
       double Dmin = d_min.load() / 1e6; // in sec
       double D_pkt = owd / 1e6;         // in sec
