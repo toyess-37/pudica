@@ -26,7 +26,6 @@ def step_trace(path, bw1, bw2, swap_s, secs):
     for bw, end in [(bw1, swap_s * 1000), (bw2, secs * 1000)]:
       ms = 1000 / ((bw * 1e6) / PKT_BITS)
       t = end - (secs - swap_s) * 1000 if bw == bw2 else 0.0
-      # reset t properly
     t = 0.0
     for bw, end_ms in [(bw1, swap_s * 1000), (bw2, secs * 1000)]:
       ms = 1000 / ((bw * 1e6) / PKT_BITS)

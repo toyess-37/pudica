@@ -97,7 +97,7 @@ namespace PudicaAlgorithm
 
     history.push_back({bur_corr, current_bitrate});
     if (history.size() > 12)
-      history.pop_front(); // reset every 200ms
+      history.pop_front(); // reset after 12 frames (200ms on 60fps, but may be sad due to congestion)
 
     if (bur_corr > 1.0)
     {

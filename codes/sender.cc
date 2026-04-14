@@ -141,7 +141,7 @@ private:
     uint64_t t0 = 0;        // send time of first packet (microsecs)
     uint64_t t1_recv = 0;   // recv time of last packet  (microsecs)
     uint32_t bytes_out = 0; // bytes sent by pacer
-    vector<double> probes;  // Ti values (sec, §4.1 Eq. 4)
+    vector<double> probes;  // Ti values
     bool got_first = false;
     bool got_last = false;
     bool done = false; // processed
@@ -170,8 +170,8 @@ private:
       if (owd < d_min.load())
         d_min.store(owd);
 
-      double Dmin = d_min.load() / 1e6; // sec
-      double D_pkt = owd / 1e6;         // sec
+      double Dmin = d_min.load() / 1e6; // in sec
+      double D_pkt = owd / 1e6;         // in sec
 
       if (!inflight.count(fid))
         inflight[fid].bytes_out = pacer_bytes[fid % 128].load(memory_order_relaxed);

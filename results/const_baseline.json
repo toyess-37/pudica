@@ -3,13 +3,13 @@
   "bw_mbps": 20,
   "summary": {
     "label": "const_baseline",
-    "n_frames": 1745,
-    "avg_bitrate": 17.205,
-    "avg_delay": 25.862,
-    "p95_delay": 27.897,
-    "p99_delay": 28.995,
+    "n_frames": 1752,
+    "avg_bitrate": 17.215,
+    "avg_delay": 25.93,
+    "p95_delay": 27.936,
+    "p99_delay": 28.455,
     "stall_100ms": 0.0,
     "stall_200ms": 0.0,
-    "avg_bur": 0.9329
+    "avg_bur": 0.935
   }
 }

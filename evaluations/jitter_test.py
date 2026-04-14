@@ -20,9 +20,9 @@ def run_jitter(args):
         t += args.jitter
         period_ctr = 0.0
 
+  procs = []
   with tempfile.TemporaryDirectory() as tmpdir:
     send_lf = Path(tmpdir) / "send.log"
-    procs = []
     try:
       procs.append(subprocess.Popen(
         [RECEIVER_BIN, str(args.port)],

@@ -35,10 +35,10 @@ def find_mahimahi_traces(filter_str=""):
 
 def run_trace(name, up, down, rtt, dur, port):
   """run one sender/receiver session over a given trace pair."""
+  procs = []
   with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
     log = tmp / "send.log"
-    procs = []
     try:
       procs.append(subprocess.Popen([RECEIVER_BIN, str(port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
       time.sleep(0.3)

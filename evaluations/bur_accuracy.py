@@ -17,10 +17,10 @@ def run_bur(args):
     trace = TRACES_DIR / f"bur_{bw}mbps.up"
     const_trace(trace, bw, args.dur)
 
+    procs = []
     with tempfile.TemporaryDirectory() as tmpdir:
       tmp = Path(tmpdir)
       send_lf = tmp / "send.log"
-      procs = []
       try:
         procs.append(subprocess.Popen(
           [RECEIVER_BIN, str(args.port)],

@@ -25,9 +25,9 @@ def run_step(args):
   else:
     step_trace(trace, args.bw1, args.bw2, args.swap, args.dur)
 
+  procs = []
   with tempfile.TemporaryDirectory() as tmpdir:
     send_lf = Path(tmpdir) / "send.log"
-    procs = []
     try:
       procs.append(subprocess.Popen([RECEIVER_BIN, str(args.port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
       time.sleep(0.5)

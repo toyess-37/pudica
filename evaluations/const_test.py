@@ -13,9 +13,10 @@ def run_const(args):
   const_trace(trace, args.bw, args.dur)
   print(f"[*] bw={args.bw} Mbps  dur={args.dur}s  rtt={args.rtt}ms  port={args.port}")
 
+  procs = []
   with tempfile.TemporaryDirectory() as tmp:
-    send_lf = Path(tmp) / "send.log"
-    procs = []
+    tmp = Path(tmp)
+    send_lf = tmp / "send.log"
     try:
       procs.append(subprocess.Popen([RECEIVER_BIN, str(args.port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
       time.sleep(0.5)
