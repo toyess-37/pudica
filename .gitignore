@@ -25,7 +25,7 @@ traces/
 *.log
 debug_send_*.log
 # *.json
-*.up
+# *.up
 
 # Ignore Mahimahi temporary files or system trash
 .DS_Store

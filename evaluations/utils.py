@@ -10,6 +10,7 @@ SENDER_BIN   = str(_ROOT / "codes" / "sender")
 RECEIVER_BIN = str(_ROOT / "codes" / "receiver")
 RESULTS_DIR  = _ROOT / "results"
 TRACES_DIR   = _ROOT / "traces"
+ZEUS_DIR     = _ROOT / "zeus_traces"
 TARGET_IP    = "$MAHIMAHI_BASE" # when testing between 2 machines, use IP of that device
 
 

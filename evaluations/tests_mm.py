@@ -1,6 +1,6 @@
 """
 tests over the built-in LTE/5G traces
-mahimahi ships traces in /usr/share/mahimahi/traces/
+mahimahi keeps traces in /mahimahi/traces/
 each trace is tested as: mm-delay <rtt/2> mm-link <up> <down> -- sender
 
 usage:
@@ -10,7 +10,7 @@ usage:
   # specific subset
   python tests_mm.py --filter TMobile --port 9800
 """
-import argparse, csv, subprocess, time, tempfile, json
+import argparse, csv, subprocess, time, tempfile
 from pathlib import Path
 from utils import RECEIVER_BIN, cleanup, parse_log, summarise, save, make_script, sender_cmd
 

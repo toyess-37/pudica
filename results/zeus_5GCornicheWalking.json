@@ -1,0 +1,15 @@
+{
+  "test": "zeus_trace",
+  "trace": "5GCornicheWalking.up",
+  "summary": {
+    "label": "zeus_5GCornicheWalking",
+    "n_frames": 1737,
+    "avg_bitrate": 22.878,
+    "avg_delay": 24.656,
+    "p95_delay": 26.635,
+    "p99_delay": 27.724,
+    "stall_100ms": 0.0,
+    "stall_200ms": 0.0,
+    "avg_bur": 0.8864
+  }
+}

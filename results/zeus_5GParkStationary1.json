@@ -1,0 +1,15 @@
+{
+  "test": "zeus_trace",
+  "trace": "5GParkStationary1.up",
+  "summary": {
+    "label": "zeus_5GParkStationary1",
+    "n_frames": 1056,
+    "avg_bitrate": 0.427,
+    "avg_delay": 469.998,
+    "p95_delay": 1680.257,
+    "p99_delay": 1881.935,
+    "stall_100ms": 0.5653,
+    "stall_200ms": 0.4744,
+    "avg_bur": 27.5579
+  }
+}
