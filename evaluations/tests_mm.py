@@ -10,9 +10,9 @@ usage:
   # specific subset
   python tests_mm.py --filter TMobile --port 9800
 """
-import argparse, csv, subprocess, time, tempfile
+import argparse, subprocess, time, tempfile
 from pathlib import Path
-from utils import RECEIVER_BIN, cleanup, parse_log, summarise, save, make_script, sender_cmd
+from utils import RECEIVER_BIN, RESULTS_DIR, cleanup, parse_log, summarise, save, make_script, sender_cmd
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -66,40 +66,22 @@ def run(args):
     results.append(s)
     print(f"avg_br={s['avg_bitrate']} mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.2f}%")
 
-  # custom 5g traces from manifest
-  if args.manifest:
-    manifest = Path(args.manifest)
-    if not manifest.exists():
-      print(f"[!] manifest not found: {manifest}"); 
-    else:
-      with open(manifest) as f:
-        rows = list(csv.DictReader(f))
-      for row in rows:
-        name = row["tag"]
-        if args.filter and args.filter.lower() not in name.lower(): continue
-        up   = Path(row["ul_trace"])
-        down = Path(row["dl_trace"])
-        rtt  = int(float(row.get("latency_ms", args.rtt)))
-        if not up.exists() or not down.exists():
-          print(f"  skipping {name}: trace files missing"); continue
-        print(f"running 5g/{name} ...", end=" ", flush=True)
-        s = run_trace(name, up, down, rtt, args.dur, args.port)
-        s["label"] = f"5g/{name}"
-        results.append(s)
-        print(f"avg_br={s['avg_bitrate']} mbps  avg_delay={s['avg_delay']} ms")
-
   if results:
     save({"test": "tests_mm", "results": results}, "tests_mm")
     # print summary table
-    print(f"\n{'trace':<25} {'avg_rate':>8} {'avg_delay':>9} {'p99_delay':>9} {'stall_100ms%':>8}")
-    print("-" * 80)
-    for s in results:
-      print(f"{s['label']:<20} {s['avg_bitrate']:>7.2f}m {s['avg_delay']:>8.1f}ms "
-            f"{s['p99_delay']:>8.1f}ms {s['stall_100ms']*100:>7.3f}%")
+    RESULTS_DIR.mkdir(exist_ok=True)
+    summary_file = RESULTS_DIR / "mahimahi_tabular_summary.txt"
+    with open(summary_file, "w") as f:
+      f.write(f"{'trace':<25} {'avg_rate':>10} {'avg_delay':>10} {'p99_delay':>10} {'stall_100ms%':>12}\n")
+      f.write("-" * 75 + "\n")
+      for s in results:
+        f.write(f"{s['label']:<25} {s['avg_bitrate']:>9.2f}m {s['avg_delay']:>8.1f}ms "
+                f"{s['p99_delay']:>8.1f}ms {s['stall_100ms']*100:>11.3f}%\n")
+        
+    print(f"\nTests complete. Analysis written to: {summary_file}")
 
 if __name__ == "__main__":
   p = argparse.ArgumentParser()
-  p.add_argument("--manifest", default=None, help="path to manifest.csv from csv_to_mahimahi.py")
   p.add_argument("--filter",   default="", help="only run traces whose name contains this string")
   p.add_argument("--dur",  type=int, default=20)
   p.add_argument("--rtt",  type=int, default=20)

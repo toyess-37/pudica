@@ -93,7 +93,7 @@ def save(data, prefix):
   print(f"saved to: {out}")
   return out
 
-def plot_single(burs, bitrates, delays, title="", out_pdf="out.pdf", window=10):
+def plot_single(burs, bitrates, delays, title="", out_svg="out.svg", window=10):
   if not bitrates:
     print("[error] no data to plot"); return
 
@@ -117,6 +117,6 @@ def plot_single(burs, bitrates, delays, title="", out_pdf="out.pdf", window=10):
   a3.set_xlabel("timeline (ms)", fontweight="bold")
 
   plt.tight_layout()
-  plt.savefig(out_pdf, dpi="figure", format="pdf")
+  plt.savefig(out_svg, dpi="figure", format="svg")
   plt.close(fig)
-  print(f"plot: {out_pdf}")
+  print(f"plot: {out_svg}")

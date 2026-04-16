@@ -33,12 +33,12 @@ def run_const(args):
 
   s = summarise(burs, bitrates, delays, label="const_baseline")
   print(f"avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
-  out = save({"test": "const_baseline", "bw_mbps": args.bw, "summary": s}, "const_baseline")
+  out = save({"test": f"const_{args.bw}", "bw_mbps": args.bw, "summary": s}, f"const_{args.bw}")
 
   if args.plot:
     plot_single(burs, bitrates, delays,
                 title=f"baseline convergence (bw={args.bw} Mbps)",
-                out_pdf=str(out).replace(".json", ".pdf"))
+                out_svg=str(out).replace(".json", ".svg"))
   send_lf.unlink(missing_ok=True)
 
 if __name__ == "__main__":

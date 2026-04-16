@@ -74,7 +74,8 @@ namespace PudicaAlgorithm
       double I = (B_MAX + (std::pow(2.0, tau) / std::max(std::log(current_rate), B_MIN))) * (GAMMA_MD / 2.0);
       double A = I - (GAMMA_MD * current_rate); // net step A
       // bounds on A (according to section 4.2 of the paper)
-      A = std::min(std::max(A_MIN, A), A_MAX);
+      double A_max = A_MAX * current_rate;
+      A = std::min(std::max(A_MIN, A), A_max);
 
       new_rate = current_rate + A;
     }
@@ -118,7 +119,7 @@ namespace PudicaAlgorithm
         restore_next = false; // cancel any pending one-frame revert
         saved_rate = 0.0;
 
-        double drain_rate = (8.0 * fa.in_bytes) / (DRAIN_WIN * 1'000'000.0);
+        double drain_rate = (8.0 * fa.in_bytes) / (DRAIN_WIN * 1e6);
         double new_rate = ALPHA * fa.recv_rate - drain_rate;
         current_bitrate = std::max(new_rate, B_MIN);
         adj_after = fa.fid + fa.n_inflight;

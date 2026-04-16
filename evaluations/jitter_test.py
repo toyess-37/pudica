@@ -45,7 +45,7 @@ def run_jitter(args):
   if args.plot:
     plot_single(burs, bitrates, delays,
                 title=f"jitter {args.jitter}ms / {args.period}ms period",
-                out_pdf=str(out).replace(".json", ".pdf"))
+                out_svg=str(out).replace(".json", ".svg"))
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()

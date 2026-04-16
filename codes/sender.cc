@@ -23,7 +23,7 @@ uint64_t now_microsecs()
 }
 
 /*
-  uses the idea of precise_sleep from:
+  uses the idea (well, the exact code) of precise_sleep from:
   https://blog.bearcats.nl/accurate-sleep-function/
   (tl;dr - dynamically updates the guess of OS delay
          - sleeps for that much time only, while also ensuring low cpu usage)
@@ -69,7 +69,9 @@ private:
   socklen_t dest_len = sizeof(dest);
 
   atomic<bool> running{false};
-  thread t_pacer, t_listener;
+  atomic<bool> recv_ready;    // whethere receiver is ready or not
+  thread t_hello;             // for the initial hello exchange with the receiver [details in the report]
+  thread t_pacer, t_listener; // pacer and listener threads for sending packets and running the algorithm
 
   mutex ctrl_mtx;
   PudicaAlgorithm::Controller ctrl;
@@ -77,7 +79,8 @@ private:
   atomic<double> bitrate{PudicaAlgorithm::B_MIN};
   atomic<double> pacing{PudicaAlgorithm::GAMMA_P};
 
-  struct Owd { // for resetting d_min after every 10s
+  struct Owd
+  { // for resetting d_min after every 10s
     uint64_t ts;
     int64_t owd;
   };
@@ -86,6 +89,11 @@ private:
   atomic<int64_t> rtt_min{INT64_MAX};
 
   atomic<uint32_t> pacer_bytes[128]; // bytes sent per frame slot
+
+  void hello_listener()
+  {
+
+  }
 
   void pacer()
   {
@@ -99,7 +107,7 @@ private:
 
       uint32_t f_bytes = static_cast<uint32_t>((rate * 1000.0 * 125.0) / 60.0);
       uint32_t pkts = f_bytes / LOAD_SZ + 1;
-      pacer_bytes[fid % 128].store(f_bytes, memory_order_relaxed);
+      pacer_bytes[fid % 128].store(f_bytes);
 
       double sensible = INTERVAL / rho;
       double pkt_gap = sensible / pkts;
@@ -174,14 +182,16 @@ private:
 
       int64_t owd = static_cast<int64_t>(ack->recv_time) - static_cast<int64_t>(ack->echoed_send);
 
-      // to maintain a 10s window of updating 
+      // to maintain a 10s window of updating
       uint64_t current_ts = now_microsecs();
       int64_t cutoff = static_cast<int64_t>(current_ts - 10000000ULL); // 10 seconds in microseconds
 
-      while (!owd_window.empty() && static_cast<int64_t>(owd_window.front().ts) < cutoff) {
+      while (!owd_window.empty() && static_cast<int64_t>(owd_window.front().ts) < cutoff)
+      {
         owd_window.pop_front();
       }
-      while (!owd_window.empty() && static_cast<int64_t>(owd_window.back().owd) >= owd) {
+      while (!owd_window.empty() && static_cast<int64_t>(owd_window.back().owd) >= owd)
+      {
         owd_window.pop_back();
       }
       owd_window.push_back({current_ts, owd});
@@ -191,7 +201,7 @@ private:
       double D_pkt = owd / 1e6;         // in sec
 
       if (!inflight.count(fid))
-        inflight[fid].bytes_out = pacer_bytes[fid % 128].load(memory_order_relaxed);
+        inflight[fid].bytes_out = pacer_bytes[fid % 128].load();
 
       auto &fr = inflight[fid];
       if (fr.done)
@@ -326,7 +336,7 @@ int main(int argc, char *argv[])
 {
   if (argc != 4)
   {
-    cerr << "Usage: " << argv[0] << " <ip> <port> <duration_sec>\n";
+    cerr << "Usage: " << argv[0] << " <target_ip> <port> <duration_sec>\n";
     return 1;
   }
   try

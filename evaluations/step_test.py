@@ -55,7 +55,7 @@ def run_step(args):
   if args.plot:
     plot_single(burs, bitrates, delays,
                 title=f"step {args.bw1} to {args.bw2} mbps at t={args.swap}s",
-                out_pdf=str(out).replace(".json", ".pdf"))
+                out_svg=str(out).replace(".json", ".svg"))
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()

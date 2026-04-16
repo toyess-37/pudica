@@ -70,19 +70,19 @@ def run(args):
   print(f"\n[cubic] pudica={pudica_avg:.2f} Mbps  cubic={cubic_thput:.2f} Mbps  pudica share={share*100:.1f}%")
 
   out = save({
-    "test": "cubic",
+    "test": f"cubic_{args.buf}",
     "buf_pkts": args.buf,
     "pudica_avg_Mbps": round(pudica_avg, 3),
     "cubic_Mbps":      round(cubic_thput, 3),
     "pudica_share":    round(share, 4),
     "summary": s,
-  }, "cubic")
+  }, f"cubic_{args.buf}")
 
   if args.plot:
     plot_single(
       burs, bitrates, delays,
       title=f"pudica vs cubic  bw={args.bw} Mbps  buf={args.buf} pkts",
-      out_pdf=str(out).replace(".json", ".pdf"),
+      out_svg=str(out).replace(".json", ".svg"),
     )
 
 if __name__ == "__main__":

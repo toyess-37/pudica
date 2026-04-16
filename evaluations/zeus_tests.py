@@ -46,7 +46,7 @@ def run_zeus_trace(args):
   out = save({"test": "zeus_trace", "trace": trace_path.name, "summary": s}, f"zeus_{test_name}")
 
   if args.plot:
-    plot_single(burs, bitrates, delays, title=f"Pudica over 5G Zeus Trace: {test_name}", out_pdf=str(out).replace(".json", ".pdf"))
+    plot_single(burs, bitrates, delays, title=f"Pudica over 5G Zeus Trace: {test_name}", out_svg=str(out).replace(".json", ".svg"))
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()

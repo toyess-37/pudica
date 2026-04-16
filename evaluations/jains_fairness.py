@@ -15,7 +15,7 @@ def jains_fairness(bitrates_per_flow):
   n = len(avgs)
   return (sum(avgs) ** 2) / (n * sum(x ** 2 for x in avgs))
 
-def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=10, out_pdf="fairness.pdf"):
+def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=10, out_svg="fairness.svg"):
   colors = plt.cm.tab10.colors
 
   fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
@@ -61,9 +61,9 @@ def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=1
     ax.legend(loc="upper right", fontsize=7, ncol=2)
 
   plt.tight_layout()
-  plt.savefig(out_pdf, dpi="figure", format="pdf")
+  plt.savefig(out_svg, dpi="figure", format="svg")
   plt.close(fig)
-  print(f"fairness plot: {out_pdf}")
+  print(f"fairness plot: {out_svg}")
 
 def run(args):
   TRACES_DIR.mkdir(exist_ok=True)
@@ -126,7 +126,7 @@ def run(args):
       flow_data, fairness,
       stagger_s=args.stagger,
       title=f"fairness - {args.flows} flows on {args.bw} mbps",
-      out_pdf=str(out).replace(".json", ".pdf"),
+      out_svg=str(out).replace(".json", ".svg"),
     )
 
 if __name__ == "__main__":

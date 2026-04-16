@@ -56,12 +56,12 @@ def run_bur(args):
     ax.set_xlabel("link bw (mbps)"); ax.set_ylabel("estimated bur")
     ax.set_title("bur estimation accuracy"); ax.legend(); ax.grid(True, ls="--", alpha=0.6)
     plt.tight_layout()
-    plt.savefig(str(out).replace(".json", ".pdf"), format="pdf")
+    plt.savefig(str(out).replace(".json", ".svg"), format="svg")
     plt.close(fig)
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
-  parser.add_argument("--bw-list", type=str, default="5,10,15,20,25,30")
+  parser.add_argument("--bw-list", type=str, default="5,10,15,20,25")
   parser.add_argument("--dur",  type=int,   default=20)
   parser.add_argument("--rtt",  type=int,   default=20)
   parser.add_argument("--port", type=int,   default=9600)
