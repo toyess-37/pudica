@@ -1,0 +1,10 @@
+trace                       avg_rate  avg_delay  p99_delay stall_100ms%
+---------------------------------------------------------------------------
+ATT-LTE-driving-2016           3.48m   2753.2ms   8733.9ms      86.390%
+ATT-LTE-driving                0.90m   1174.1ms   2383.5ms     100.000%
+TMobile-LTE-driving           18.50m     64.7ms    958.8ms       8.730%
+TMobile-LTE-short              2.01m     58.1ms    521.7ms      10.410%
+TMobile-UMTS-driving           0.70m   1009.8ms   6320.7ms      86.100%
+Verizon-EVDO-driving           0.92m   1189.5ms   2346.6ms     100.000%
+Verizon-LTE-driving            3.71m     73.3ms    991.5ms       7.830%
+Verizon-LTE-short              3.69m     36.8ms    274.8ms       5.480%

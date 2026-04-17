@@ -1,0 +1,15 @@
+{
+  "test": "const_20.0",
+  "bw_mbps": 20.0,
+  "summary": {
+    "label": "const_baseline",
+    "n_frames": 1789,
+    "avg_bitrate": 18.185,
+    "avg_delay": 26.244,
+    "p95_delay": 28.382,
+    "p99_delay": 29.052,
+    "stall_100ms": 0.0,
+    "stall_200ms": 0.0,
+    "avg_bur": 0.9471
+  }
+}

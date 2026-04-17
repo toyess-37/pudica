@@ -1,0 +1,93 @@
+{
+  "test": "zeus_batch_full",
+  "results": [
+    {
+      "label": "5GBeachStationary",
+      "n_frames": 3871,
+      "avg_bitrate": 43.16,
+      "avg_delay": 24.731,
+      "p95_delay": 28.614,
+      "p99_delay": 43.979,
+      "stall_100ms": 0.0023,
+      "stall_200ms": 0.0003,
+      "avg_bur": 0.8696
+    },
+    {
+      "label": "5GBeachStationary2",
+      "n_frames": 3840,
+      "avg_bitrate": 46.818,
+      "avg_delay": 22.42,
+      "p95_delay": 23.427,
+      "p99_delay": 42.271,
+      "stall_100ms": 0.0044,
+      "stall_200ms": 0.001,
+      "avg_bur": 0.743
+    },
+    {
+      "label": "5GBeachStationary3",
+      "n_frames": 2383,
+      "avg_bitrate": 9.149,
+      "avg_delay": 1211.246,
+      "p95_delay": 3649.156,
+      "p99_delay": 3794.967,
+      "stall_100ms": 0.5778,
+      "stall_200ms": 0.5355,
+      "avg_bur": 72.0086
+    },
+    {
+      "label": "5GCityDrive",
+      "n_frames": 3199,
+      "avg_bitrate": 20.41,
+      "avg_delay": 2166.966,
+      "p95_delay": 13276.13,
+      "p99_delay": 14978.206,
+      "stall_100ms": 0.3217,
+      "stall_200ms": 0.2932,
+      "avg_bur": 129.4129
+    },
+    {
+      "label": "5GCorniche",
+      "n_frames": 3877,
+      "avg_bitrate": 48.865,
+      "avg_delay": 21.341,
+      "p95_delay": 22.009,
+      "p99_delay": 22.344,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.6756
+    },
+    {
+      "label": "5GCornicheWalking",
+      "n_frames": 3818,
+      "avg_bitrate": 48.784,
+      "avg_delay": 21.309,
+      "p95_delay": 21.976,
+      "p99_delay": 22.651,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.6732
+    },
+    {
+      "label": "5GParkStationary1",
+      "n_frames": 3066,
+      "avg_bitrate": 2.649,
+      "avg_delay": 2439.948,
+      "p95_delay": 12958.8,
+      "p99_delay": 14810.9,
+      "stall_100ms": 0.696,
+      "stall_200ms": 0.6298,
+      "avg_bur": 145.7666
+    },
+    {
+      "label": "5GParkStationary2",
+      "n_frames": 3848,
+      "avg_bitrate": 44.864,
+      "avg_delay": 21.86,
+      "p95_delay": 22.162,
+      "p99_delay": 58.146,
+      "stall_100ms": 0.0036,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.7066
+    }
+  ]
+}

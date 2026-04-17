@@ -1,0 +1,10 @@
+trace                       avg_rate  avg_delay  p99_delay stall_100ms%
+---------------------------------------------------------------------------
+5GBeachStationary             41.56m     24.0ms     37.2ms       0.220%
+5GBeachStationary2            43.72m     23.1ms     84.2ms       0.910%
+5GBeachStationary3             3.79m    883.0ms   3455.7ms      56.530%
+5GCityDrive                   25.62m     34.8ms    301.3ms       6.630%
+5GCorniche                    47.22m     21.2ms     22.4ms       0.000%
+5GCornicheWalking             47.32m     21.3ms     22.4ms       0.000%
+5GParkStationary1              0.35m    470.1ms   1878.7ms      56.640%
+5GParkStationary2             43.77m     22.3ms     65.3ms       0.400%

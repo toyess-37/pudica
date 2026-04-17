@@ -1,0 +1,30 @@
+{
+  "test": "bur_accuracy",
+  "data": [
+    {
+      "bw": 5.0,
+      "est_bur": 0.9144,
+      "avg_bitrate": 3.946
+    },
+    {
+      "bw": 10.0,
+      "est_bur": 0.9486,
+      "avg_bitrate": 8.587
+    },
+    {
+      "bw": 15.0,
+      "est_bur": 0.9525,
+      "avg_bitrate": 13.264
+    },
+    {
+      "bw": 20.0,
+      "est_bur": 0.994,
+      "avg_bitrate": 18.269
+    },
+    {
+      "bw": 25.0,
+      "est_bur": 0.9484,
+      "avg_bitrate": 22.064
+    }
+  ]
+}
