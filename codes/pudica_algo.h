@@ -35,8 +35,8 @@ namespace PudicaAlgorithm
     std::vector<double> probes; // (sec:4.1) computed probe delays
     double recv_rate;           // frame receiving rate (Mbps)
     double in_bytes;            // total bytes across all in-flight frames
-    uint32_t n_inflight;        // number of currently in-flight frames
     uint64_t now_microsecs;     // current time (microsecs, for periodic resets)
+    uint32_t n_inflight;        // number of currently in-flight frames
   };
 
   double raw_BUR(double D_sec, double Dmin_sec);
