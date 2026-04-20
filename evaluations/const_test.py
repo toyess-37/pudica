@@ -9,7 +9,7 @@ from utils import (
 
 def run_const(args):
   TRACES_DIR.mkdir(exist_ok=True)
-  trace = TRACES_DIR / f"const_{args.bw}Mbps.up"
+  trace = TRACES_DIR / f"{args.bw}Mbps.up"
   const_trace(trace, args.bw, args.dur)
   print(f"[*] bw={args.bw} Mbps  dur={args.dur}s  rtt={args.rtt}ms  port={args.port}")
 
@@ -33,7 +33,7 @@ def run_const(args):
 
   s = summarise(burs, bitrates, delays, label="const_baseline")
   print(f"avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
-  out = save({"test": f"const_{args.bw}", "bw_mbps": args.bw, "summary": s}, f"const_{args.bw}")
+  out = save({"test": f"const_{args.bw}", "bw_Mbps": args.bw, "summary": s}, f"const_{args.bw}")
 
   if args.plot:
     plot_single(burs, bitrates, delays,

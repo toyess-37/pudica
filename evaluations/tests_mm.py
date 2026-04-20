@@ -64,7 +64,7 @@ def run(args):
     print(f"running {name} ...", end=" ", flush=True)
     s = run_trace(name, up, down, args.rtt, args.dur, args.port)
     results.append(s)
-    print(f"avg_br={s['avg_bitrate']} mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.2f}%")
+    print(f"avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.2f}%")
 
   if results:
     save({"test": "tests_mm", "results": results}, "tests_mm")

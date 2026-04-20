@@ -1,0 +1,40 @@
+{
+  "test": "fairness",
+  "bw_Mbps": 30,
+  "jains_index": 0.997,
+  "per_flow": [
+    {
+      "label": "flow_0",
+      "n_frames": 2645,
+      "avg_bitrate": 8.693,
+      "avg_delay": 24.448,
+      "p95_delay": 26.195,
+      "p99_delay": 28.645,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.9925
+    },
+    {
+      "label": "flow_1",
+      "n_frames": 2644,
+      "avg_bitrate": 8.949,
+      "avg_delay": 24.478,
+      "p95_delay": 26.104,
+      "p99_delay": 27.895,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.9933
+    },
+    {
+      "label": "flow_2",
+      "n_frames": 2641,
+      "avg_bitrate": 9.798,
+      "avg_delay": 24.594,
+      "p95_delay": 26.359,
+      "p99_delay": 27.89,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.9958
+    }
+  ]
+}

@@ -68,9 +68,9 @@ def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=1
 def run(args):
   TRACES_DIR.mkdir(exist_ok=True)
   total_dur = args.dur + args.stagger * args.flows
-  trace = TRACES_DIR / f"fair_{args.bw}mbps.up"
+  trace = TRACES_DIR / f"{args.bw}Mbps.up"
   const_trace(trace, args.bw, total_dur)
-  print(f"[*] bw={args.bw} mbps  flows={args.flows}  dur={args.dur}s  stagger={args.stagger}s")
+  print(f"[*] bw={args.bw} Mbps  flows={args.flows}  dur={args.dur}s  stagger={args.stagger}s")
 
   procs = []
   with tempfile.TemporaryDirectory() as tmpdir:
@@ -112,11 +112,11 @@ def run(args):
 
   print(f"\n[fairness] jain's index = {fairness:.3f}")
   for s in summaries:
-    print(f"  {s['label']}: avg_br={s['avg_bitrate']} mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
+    print(f"  {s['label']}: avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
 
   out = save({
     "test": "fairness",
-    "bw_mbps": args.bw,
+    "bw_Mbps": args.bw,
     "jains_index": round(fairness, 3),
     "per_flow": summaries,
   }, "fairness")
@@ -125,7 +125,7 @@ def run(args):
     plot_fairness(
       flow_data, fairness,
       stagger_s=args.stagger,
-      title=f"fairness - {args.flows} flows on {args.bw} mbps",
+      title=f"fairness - {args.flows} flows on {args.bw} Mbps",
       out_svg=str(out).replace(".json", ".svg"),
     )
 

@@ -8,7 +8,7 @@ from utils import (
 
 def run_jitter(args):
   TRACES_DIR.mkdir(exist_ok=True)
-  trace = TRACES_DIR / f"jitter_{args.bw}mbps.up"
+  trace = TRACES_DIR / f"jitter_{args.bw}Mbps.up"
   ms_pkt = 1000 / ((args.bw * 1e6) / PKT_BITS)
   with open(trace, "w") as f:
     t = period_ctr = 0.0

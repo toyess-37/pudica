@@ -7,13 +7,12 @@ from utils import (
 )
 
 def get_full_duration(trace_path):
-    """Reads the last line of the trace file to find its total length in seconds."""
-    with open(trace_path, "r") as f:
-        lines = [line.strip() for line in f if line.strip()]
-        if not lines:
-            return 30
-        last_ms = int(lines[-1])
-        return (last_ms // 1000) + 2
+  """Reads the last line of the trace file to find its total length in seconds."""
+  with open(trace_path, "r") as f:
+    lines = [line.strip() for line in f if line.strip()]
+    if not lines: return 30
+    last_ms = int(lines[-1])
+    return (last_ms // 1000) + 2
 
 def run_zeus_trace(trace_path, dur, rtt, port):
   print(f"[*] Running Zeus trace: {trace_path.name} | dur={dur}s")

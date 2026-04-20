@@ -90,11 +90,6 @@ private:
 
   atomic<uint32_t> pacer_bytes[128]; // bytes sent per frame slot
 
-  void hello_listener()
-  {
-
-  }
-
   void pacer()
   {
     uint32_t fid = 1;
@@ -114,8 +109,8 @@ private:
       double agnostic = INTERVAL - sensible;
       double probe_gap = agnostic / (N_PROBE + 1);
 
-      uint8_t buf[LOAD_SZ];
-      memset(buf + sizeof(PktHeader), 0, LOAD_SZ - sizeof(PktHeader));
+      uint8_t buf[LOAD_SZ + sizeof(PktHeader)];
+      memset(buf + sizeof(PktHeader), 0, LOAD_SZ);
 
       for (uint32_t pid = 0; pid < pkts && running; pid++)
       {
@@ -152,21 +147,22 @@ private:
 
   struct Frame
   {
-    uint64_t t0 = 0;        // send time of first packet (microsecs)
-    uint64_t t1_recv = 0;   // recv time of last packet  (microsecs)
-    uint32_t bytes_out = 0; // bytes sent by pacer
+    uint64_t t0 = 0;        // send time of first packet of frame (microsecs)
+    uint64_t t1_recv = 0;   // recv time of last packet of frame (microsecs)
     vector<double> probes;  // Ti values
+    uint32_t bytes_out = 0; // bytes sent by pacer
+    bool done = false;      // frame processed or not
     bool got_first = false;
     bool got_last = false;
-    bool done = false; // processed
 
-    bool ready() const { return got_first && got_last && !probes.empty(); }
+    bool ready() const { return got_first && got_last && probes.size() == N_PROBE; }
   };
 
   void listener()
   {
     uint8_t buf[MAX_BUF];
     map<uint32_t, Frame> inflight;
+    uint32_t last_done_fid = 0;
 
     while (running)
     {
@@ -184,7 +180,7 @@ private:
 
       // to maintain a 10s window of updating
       uint64_t current_ts = now_microsecs();
-      int64_t cutoff = static_cast<int64_t>(current_ts - 10000000ULL); // 10 seconds in microseconds
+      int64_t cutoff = static_cast<int64_t>(current_ts - 10'000'000ULL); // 10 seconds in microseconds
 
       while (!owd_window.empty() && static_cast<int64_t>(owd_window.front().ts) < cutoff)
       {
@@ -204,8 +200,6 @@ private:
         inflight[fid].bytes_out = pacer_bytes[fid % 128].load();
 
       auto &fr = inflight[fid];
-      if (fr.done)
-        continue; // already processed
 
       if (ack->flags & IS_FIRST)
       {
@@ -232,21 +226,23 @@ private:
         fr.probes.push_back(min(min(raw_T, Hi), T_bound));
       }
 
-      if (fr.ready())
+      if (fr.ready() && !fr.done)
       {
         fr.done = true;
+        last_done_fid = max(last_done_fid, fid);
 
         double D = (static_cast<int64_t>(fr.t1_recv) - static_cast<int64_t>(fr.t0)) / 1e6;
 
         double in_bytes = 0;
+        uint32_t n_active = 0;
         for (auto &[id, f] : inflight)
-          in_bytes += f.bytes_out;
+          if (!f.done)
+          {
+            in_bytes += f.bytes_out;
+            n_active++;
+          }
 
-        PudicaAlgorithm::FrameAck fa{
-            fid, D, Dmin, fr.probes,
-            ack->rate, in_bytes,
-            static_cast<uint32_t>(inflight.size()),
-            now_microsecs()};
+        PudicaAlgorithm::FrameAck fa{fid, D, Dmin, fr.probes, ack->rate, in_bytes, now_microsecs(), n_active};
 
         PudicaAlgorithm::control_output out;
         {
@@ -261,9 +257,8 @@ private:
 
         cout << "BUR: " << out.bur
              << " bitrate: " << out.bitrate
-             << " delay: " << (prop + queue) << "\n";
-
-        inflight.erase(fid);
+             << " delay: " << (prop + queue)
+             << " frame id: " << fid << "\n";
       }
 
       // oldest inflight check and update
@@ -286,8 +281,8 @@ private:
         }
       }
 
-      if (fid > 5)
-        inflight.erase(inflight.begin(), inflight.lower_bound(fid - 5));
+      if (last_done_fid > 10)
+        inflight.erase(inflight.begin(), inflight.lower_bound(last_done_fid - 10));
     }
   }
 
@@ -296,7 +291,7 @@ public:
   {
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
-      throw runtime_error("[sender] ERROR: socket creation failed.");
+      throw runtime_error("[sender] ERROR: socket creation failed");
     dest.sin_family = AF_INET;
     dest.sin_port = htons(port);
     if (inet_pton(AF_INET, ip.c_str(), &dest.sin_addr) <= 0)

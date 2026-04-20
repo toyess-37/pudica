@@ -14,7 +14,7 @@ def run_bur(args):
   results = []
 
   for bw in bw_list:
-    trace = TRACES_DIR / f"bur_{bw}mbps.up"
+    trace = TRACES_DIR / f"{bw}Mbps.up"
     const_trace(trace, bw, args.dur)
 
     procs = []
@@ -43,7 +43,7 @@ def run_bur(args):
     est_bur = float(np.mean(tail)) if tail else 0.0
     results.append({"bw": bw, "est_bur": round(est_bur, 4),
                     "avg_bitrate": round(float(np.mean(bitrates)), 3) if bitrates else 0})
-    print(f"bw={bw} mbps  converged bur={est_bur:.4f}")
+    print(f"bw={bw} Mbps  converged bur={est_bur:.4f}")
 
   out = save({"test": "bur_accuracy", "data": results}, "bur_accuracy")
 
@@ -53,7 +53,7 @@ def run_bur(args):
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(xs, ys, "o-", label="estimated bur (converged)")
     ax.axhline(1.0, color="gray", ls="--", label="ideal bur=1.0")
-    ax.set_xlabel("link bw (mbps)"); ax.set_ylabel("estimated bur")
+    ax.set_xlabel("link bw (Mbps)"); ax.set_ylabel("estimated bur")
     ax.set_title("bur estimation accuracy"); ax.legend(); ax.grid(True, ls="--", alpha=0.6)
     plt.tight_layout()
     plt.savefig(str(out).replace(".json", ".svg"), format="svg")

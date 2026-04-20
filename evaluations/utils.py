@@ -8,7 +8,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 PKT_BITS     = 1400 * 8
 SENDER_BIN   = str(_ROOT / "codes" / "sender")
 RECEIVER_BIN = str(_ROOT / "codes" / "receiver")
-RESULTS_DIR  = _ROOT / "results"
+RESULTS_DIR  = _ROOT / "results_wsl"
 TRACES_DIR   = _ROOT / "traces"
 ZEUS_DIR     = _ROOT / "zeus_traces"
 TARGET_IP    = "$MAHIMAHI_BASE" # when testing between 2 machines, use IP of that device
@@ -72,7 +72,6 @@ def cleanup(procs):
       p.wait()
 
 def make_script(path, cmds):
-  """write cmds (list of shell command strings) to a runnable sh script."""
   s = Path(path) / "run.sh"
   s.write_text("#!/bin/sh\n" + "\n".join(cmds) + "\n")
   s.chmod(0o755)
@@ -97,7 +96,7 @@ def plot_single(burs, bitrates, delays, title="", out_svg="out.svg", window=10):
   if not bitrates:
     print("[error] no data to plot"); return
 
-  t = [i * 16.67 for i in range(len(bitrates))]
+  t = [i * 16.666 for i in range(len(bitrates))]
   fig, (a1, a2, a3) = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
   fig.suptitle(title, fontsize=13, fontweight="bold")
 
@@ -106,14 +105,14 @@ def plot_single(burs, bitrates, delays, title="", out_svg="out.svg", window=10):
     (a2, delays,   "Delay (ms)",     "green"),
     (a3, burs,     "BUR",            "blue"),
   ]:
-    ax.plot(t, data, color=color, alpha=0.2, lw=1)
+    ax.plot(t, data, color=color, alpha=0.25, lw=1)
     ax.plot(t, smooth(data, window), color=color, lw=2)
     ax.set_ylabel(label, fontweight="bold")
     ax.grid(True, ls="--", alpha=0.5)
 
   a3.axhline(1.0,  color="black", ls="--", lw=2,   label="BUR=1.0")
   a3.axhline(0.85, color="gray",  ls=":",  lw=1.5, label="alpha=0.85")
-  a3.legend(loc="lower right")
+  a3.legend(loc="upper right")
   a3.set_xlabel("timeline (ms)", fontweight="bold")
 
   plt.tight_layout()
