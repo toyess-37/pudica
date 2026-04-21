@@ -37,5 +37,7 @@ Sender:
 ```
 
 TODO:
-1. Make it so that sender runs first and receiver can hop in anytime.
-2. Complete the report/analysis.
+1. Complete the report/analysis.
+
+2. Make it so that sender runs first and receiver can hop in anytime.
+3. Integrate FFMPEG and simulate a video game from one pc to another. 
