@@ -11,8 +11,8 @@ This implementation follows the paper:
 
 ## Files
 - `pudica_algo.cc` and `pudica_algo.h`: core Pudica control algorithm.
-- `sender.cc`: UDP sender with pacing and congestion control logic.
-- `receiver.cc`: UDP receiver with ACK echoing and receive-rate calculation.
+- `sender.cc`: UDP sender with pacing and listener thread taking care of the payload and probe packets.
+- `receiver.cc`: UDP receiver that sends an ACK echoing the time and receive-rate (after calculation).
 - `protocol.h`: shared packet and ACK structures.
 
 ## Build
@@ -33,7 +33,7 @@ Receiver:
 
 Sender:
 ```bash
-./sender <ip> <port> <duration_sec>
+./sender <target_ip> <port> <duration_sec>
 ```
 
 TODO:
