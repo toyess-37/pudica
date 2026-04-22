@@ -174,6 +174,21 @@ namespace PudicaAlgorithm
     return {current_bitrate, current_pacing, last_bur};
   }
 
+  
+  void Controller::on_frame_loss()
+  {
+    // A frame timed out entirely.
+    // Force active queue draining.
+    congested_frames = 3;
+    draining = true;
+    restore_next = false;
+    saved_rate = 0.0;
+
+    // cut bitrate (e.g., halve it ---> hardcoded)
+    current_bitrate = std::max(current_bitrate * 0.5, B_MIN);
+    history.clear();
+  }
+
   // to monitor the frames that have been sent to the network
   // but have not yet been acknowledged
   // when the delay > 2 frame intervals, do a fallback

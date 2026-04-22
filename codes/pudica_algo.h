@@ -4,21 +4,23 @@
 #include <optional>
 #include <vector>
 #include <deque>
+#include "protocol.h"
 
 namespace PudicaAlgorithm
 {
-  constexpr double L_SEC = 16666.0 / 1e6;                                          // 60fps
-  constexpr double GAMMA_P = 1.25;                                                 // (sec:4.1) pacing
-  constexpr double ALPHA = 0.85;                                                   // (sec:4.1) threshold for MI vs AI-MD
-  constexpr double GAMMA_MI = 0.3;                                                 // (sec:4.1) discounting coefficient for MI
-  constexpr double GAMMA_MD = 0.05;                                                // (sec:4.1) MD param for AI-MD
-  constexpr double B_MAX = 50.0;                                                   // (sec:4.1) maximum bitrate in Mbps
-  constexpr double B_MIN = 0.2;                                                    // (sec:4.1) minimum bitrate in Mbps --- changed it from 1.0 to 0.2 for mahimahi inbuilt traces
-  constexpr double A_MIN = -1.0;                                                   // (sec:4.2) lower bound capping A
-  constexpr double A_MAX = GAMMA_MD;                                               // (sec:4.2) dynamic upper bound capping A; A = min(A, A_MAX*current_rate)
-  constexpr double ZETA = 0.15;                                                    // (sec:4.3) temporary fallback fraction
-  constexpr double DRAIN_WIN = 0.200;                                              // (sec:4.3) queue-drain window (secs)
-  constexpr uint64_t NEXT_DELAY_THRESH = static_cast<uint64_t>(2.0 * L_SEC * 1e6); // after 2 frame duration, ignore the oldest in-flight frame
+  constexpr double L_SEC = static_cast<double>(INTERVAL / 1e6); // 60fps
+  constexpr double GAMMA_P = 1.25;                              // (sec:4.1) pacing
+  constexpr double ALPHA = 0.85;                                // (sec:4.1) threshold for MI vs AI-MD
+  constexpr double GAMMA_MI = 0.3;                              // (sec:4.1) discounting coefficient for MI
+  constexpr double GAMMA_MD = 0.05;                             // (sec:4.1) MD param for AI-MD
+  constexpr double B_MAX = 50.0;                                // (sec:4.1) maximum bitrate in Mbps
+  constexpr double B_MIN = 0.2;                                 // (sec:4.1) minimum bitrate in Mbps --- changed it from 1.0 to 0.2 for mahimahi inbuilt traces
+  constexpr double A_MIN = -1.0;                                // (sec:4.2) lower bound capping A
+  constexpr double A_MAX = GAMMA_MD;                            // (sec:4.2) dynamic upper bound capping A; A = min(A, A_MAX*current_rate)
+  constexpr double ZETA = 0.15;                                 // (sec:4.3) temporary fallback fraction
+  constexpr double DRAIN_WIN = 0.200;                           // (sec:4.3) queue-drain window (secs)
+  constexpr uint64_t NEXT_DELAY_THRESH = 2 * INTERVAL;          // after 2 frame duration, ignore the oldest in-flight frame
+  constexpr uint64_t TIMEOUT = 10 * INTERVAL;                   // time to wait for a frame to complete processing --- delete after that
 
   struct Sample
   {
@@ -85,6 +87,8 @@ namespace PudicaAlgorithm
     // implement the entire logic and all the calculations in pudica_algo.cc
     // (return bitrate, pacing)
     control_output on_frame_acked(const FrameAck &fa);
+    
+    void on_frame_loss();
 
     // returns the bitrate, pacing only when fallback criteria is triggered
     std::optional<control_output> on_inflight_age(uint64_t age); // age is in microsecs
