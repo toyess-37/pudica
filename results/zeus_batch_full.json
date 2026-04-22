@@ -1,0 +1,93 @@
+{
+  "test": "zeus_batch_full",
+  "results": [
+    {
+      "label": "5GBeachStationary",
+      "n_frames": 3871,
+      "avg_bitrate": 21.784,
+      "avg_delay": 24.965,
+      "p95_delay": 28.258,
+      "p99_delay": 39.797,
+      "stall_100ms": 0.0023,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.9844
+    },
+    {
+      "label": "5GBeachStationary2",
+      "n_frames": 3849,
+      "avg_bitrate": 24.046,
+      "avg_delay": 24.051,
+      "p95_delay": 24.892,
+      "p99_delay": 41.289,
+      "stall_100ms": 0.0036,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.9438
+    },
+    {
+      "label": "5GBeachStationary3",
+      "n_frames": 799,
+      "avg_bitrate": 23.725,
+      "avg_delay": 37.371,
+      "p95_delay": 81.547,
+      "p99_delay": 146.073,
+      "stall_100ms": 0.0388,
+      "stall_200ms": 0.0063,
+      "avg_bur": 1.7094
+    },
+    {
+      "label": "5GCityDrive",
+      "n_frames": 1964,
+      "avg_bitrate": 19.465,
+      "avg_delay": 26.73,
+      "p95_delay": 42.001,
+      "p99_delay": 115.33,
+      "stall_100ms": 0.0153,
+      "stall_200ms": 0.0,
+      "avg_bur": 1.0951
+    },
+    {
+      "label": "5GCorniche",
+      "n_frames": 3876,
+      "avg_bitrate": 24.984,
+      "avg_delay": 23.196,
+      "p95_delay": 24.402,
+      "p99_delay": 24.668,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.8881
+    },
+    {
+      "label": "5GCornicheWalking",
+      "n_frames": 3820,
+      "avg_bitrate": 24.43,
+      "avg_delay": 23.325,
+      "p95_delay": 24.461,
+      "p99_delay": 24.755,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.8976
+    },
+    {
+      "label": "5GParkStationary1",
+      "n_frames": 146,
+      "avg_bitrate": 12.91,
+      "avg_delay": 34.004,
+      "p95_delay": 101.583,
+      "p99_delay": 143.898,
+      "stall_100ms": 0.0548,
+      "stall_200ms": 0.0,
+      "avg_bur": 1.4683
+    },
+    {
+      "label": "5GParkStationary2",
+      "n_frames": 3867,
+      "avg_bitrate": 22.38,
+      "avg_delay": 24.023,
+      "p95_delay": 24.811,
+      "p99_delay": 67.935,
+      "stall_100ms": 0.0034,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.9407
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "test": "tests_mm",
+  "results": [
+    {
+      "label": "ATT-LTE-driving-2016",
+      "n_frames": 59,
+      "avg_bitrate": 3.263,
+      "avg_delay": 35.028,
+      "p95_delay": 98.488,
+      "p99_delay": 135.069,
+      "stall_100ms": 0.0508,
+      "stall_200ms": 0.0,
+      "avg_bur": 1.4377
+    },
+    {
+      "label": "ATT-LTE-driving",
+      "n_frames": 292,
+      "avg_bitrate": 0.608,
+      "avg_delay": 60.765,
+      "p95_delay": 110.694,
+      "p99_delay": 133.69,
+      "stall_100ms": 0.0959,
+      "stall_200ms": 0.0,
+      "avg_bur": 2.5509
+    },
+    {
+      "label": "TMobile-LTE-driving",
+      "n_frames": 1598,
+      "avg_bitrate": 12.725,
+      "avg_delay": 26.348,
+      "p95_delay": 32.278,
+      "p99_delay": 66.172,
+      "stall_100ms": 0.0025,
+      "stall_200ms": 0.0,
+      "avg_bur": 1.0416
+    },
+    {
+      "label": "TMobile-LTE-short",
+      "n_frames": 1581,
+      "avg_bitrate": 2.292,
+      "avg_delay": 36.125,
+      "p95_delay": 86.178,
+      "p99_delay": 130.171,
+      "stall_100ms": 0.0304,
+      "stall_200ms": 0.0,
+      "avg_bur": 1.6072
+    },
+    {
+      "label": "TMobile-UMTS-driving",
+      "n_frames": 101,
+      "avg_bitrate": 0.915,
+      "avg_delay": 78.209,
+      "p95_delay": 131.754,
+      "p99_delay": 134.405,
+      "stall_100ms": 0.3861,
+      "stall_200ms": 0.0,
+      "avg_bur": 3.2176
+    },
+    {
+      "label": "Verizon-EVDO-driving",
+      "n_frames": 4,
+      "avg_bitrate": 1.385,
+      "avg_delay": 77.368,
+      "p95_delay": 84.416,
+      "p99_delay": 85.053,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 0.3225
+    },
+    {
+      "label": "Verizon-LTE-driving",
+      "n_frames": 1646,
+      "avg_bitrate": 4.416,
+      "avg_delay": 28.225,
+      "p95_delay": 40.268,
+      "p99_delay": 59.076,
+      "stall_100ms": 0.0,
+      "stall_200ms": 0.0,
+      "avg_bur": 1.1121
+    },
+    {
+      "label": "Verizon-LTE-short",
+      "n_frames": 1223,
+      "avg_bitrate": 4.25,
+      "avg_delay": 28.747,
+      "p95_delay": 46.233,
+      "p99_delay": 108.472,
+      "stall_100ms": 0.0139,
+      "stall_200ms": 0.0,
+      "avg_bur": 1.1723
+    }
+  ]
+}
