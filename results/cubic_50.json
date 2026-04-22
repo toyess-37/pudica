@@ -1,0 +1,18 @@
+{
+  "test": "cubic_50",
+  "buf_pkts": 50,
+  "pudica_avg_Mbps": 12.599,
+  "cubic_Mbps": 44.952,
+  "pudica_share": 0.2189,
+  "summary": {
+    "label": "pudica_vs_cubic",
+    "n_frames": 1047,
+    "avg_bitrate": 12.599,
+    "avg_delay": 24.545,
+    "p95_delay": 30.856,
+    "p99_delay": 32.912,
+    "stall_100ms": 0.0,
+    "stall_200ms": 0.0,
+    "avg_bur": 0.9935
+  }
+}

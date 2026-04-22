@@ -1,0 +1,15 @@
+{
+  "test": "jitter",
+  "jitter_ms": 40,
+  "summary": {
+    "label": "jitter",
+    "n_frames": 1788,
+    "avg_bitrate": 4.395,
+    "avg_delay": 23.892,
+    "p95_delay": 42.544,
+    "p99_delay": 58.515,
+    "stall_100ms": 0.0,
+    "stall_200ms": 0.0,
+    "avg_bur": 0.9716
+  }
+}
