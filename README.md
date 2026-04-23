@@ -37,7 +37,6 @@ Sender:
 ```
 
 TODO:
-1. Complete the report/analysis.
-
+1. Make separate function-wise detailed implementation document.
 2. Make it so that sender runs first and receiver can hop in anytime.
 3. Integrate FFMPEG and simulate a video game from one pc to another. 
