@@ -2,7 +2,7 @@ import argparse, subprocess, time
 from pathlib import Path
 import tempfile
 from utils import (
-  ZEUS_DIR, RECEIVER_BIN, RESULTS_DIR, cleanup, parse_log, summarise, save,
+  ZEUS_DIR, RECEIVER_BIN, RESULTS_DIR, cleanup, parse_jsonl, summarise, save,
   make_script, sender_cmd
 )
 
@@ -18,7 +18,7 @@ def run_zeus_trace(trace_path, dur, rtt, port):
   print(f"[*] Running Zeus trace: {trace_path.name} | dur={dur}s")
   with tempfile.TemporaryDirectory() as tmp:
     tmp_path = Path(tmp)
-    send_lf = tmp_path / "send.log"
+    send_lf = tmp_path / "send.jsonl"
     procs = []
     try:
       procs.append(subprocess.Popen(
@@ -34,14 +34,14 @@ def run_zeus_trace(trace_path, dur, rtt, port):
       time.sleep(dur + 3)
     finally:
       cleanup(procs)
-
-    burs, bitrates, delays = parse_log(send_lf.read_text() if send_lf.exists() else "")
-
-  if not burs:
-    print(f"[!] Empty log for {trace_path.name}.")
-    return None
-
-  return summarise(burs, bitrates, delays, label=trace_path.stem)
+ 
+    burs, bitrates, delays = parse_jsonl(str(send_lf))
+ 
+    if not burs:
+      print(f"[!] Empty log for {trace_path.name}.")
+      return None
+ 
+    return summarise(burs, bitrates, delays, label=trace_path.stem)
 
 def run_batch(args):
   target_path = Path(args.traces).resolve()
@@ -90,7 +90,7 @@ def run_batch(args):
     f.write("-" * 75 + "\n")
     for s in results:
       f.write(f"{s['label']:<25} {s['avg_bitrate']:>9.2f}m {s['avg_delay']:>8.1f}ms "
-              f"{s['p99_delay']:>8.1f}ms {s['stall_100ms']*100:>11.3f}%\n")
+          f"{s['p99_delay']:>8.1f}ms {s['stall_100ms']*100:>11.3f}%\n")
 
   print(f"\nTests complete. Analysis written to: {summary_file}")
 

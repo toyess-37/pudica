@@ -1,0 +1,3679 @@
+
+
+--- [Page 1] ---
+
+This paper is included in the Proceedings of the 23rd USENIX Symposium 
+on Networked Systems Design and Implementation.
+May 4–6, 2026 • Renton, WA, USA
+ISBN 978-1-939133-54-0
+Open access to the Proceedings of the 23rd USENIX Symposium  
+on Networked Systems Design and Implementation is sponsored by
+FRCC: Towards Provably Fair and Robust  
+Congestion Control
+Anup Agarwal, Carnegie Mellon University; Venkat Arun, University of Texas at Austin;  
+Srinivasan Seshan, Carnegie Mellon University
+https://www.usenix.org/conference/nsdi26/presentation/agarwal-anup
+
+
+--- [Page 2] ---
+
+FRCC: Towards Provably Fair and Robust Congestion Control
+Anup Agarwal, Venkat Arun†, Srinivasan Seshan
+Carnegie Mellon University, †University of Texas at Austin
+Abstract
+Congestion control algorithms (CCAs) play a critical role
+in network bandwidth allocation. Recent work [3] showed that
+a large class of CCAs, including BBR, Copa, and Reno, starve
+flows in the presence of network jitter. Starvation occurs
+because CCAs coordinate fairness by encoding fair rates into
+congestion signals. For example, Reno’s throughput scales as
+1/√
+loss rate. Even a small amount of noise in these signals
+leads to large errors in inferring fair rates.
+We present FRCC (Fair and Robust Congestion Controller),
+the first CCA that provably bounds unfairness (avoids starva-
+tion) even under network jitter. Our key insight is to encode
+only the flow count (or equivalently, the fair link fraction) into
+the congestion signals, and independently estimate the link
+capacity to calculate the fair rate. In this way, we bound jitter’s
+impact on fairness. We implement FRCC in the Linux kernel
+and evaluate it in a variety of network conditions, including
+synthetic jitter, heterogeneous RTTs, and multi-bottleneck
+settings. FRCC closely matches the bounds predicted by our
+theoretical analysis, and consistently achieves fairness, even
+when state-of-the-art CCAs exhibit starvation.
+1
+Introduction
+End-to-end congestion control algorithms (CCAs) play a criti-
+cal role in allocating network bandwidth. Finding a good CCA
+is a challenging and long-standing problem in networking.
+Fairness, in particular, has been hard to achieve. While the
+community desires fairness across different CCAs [5, 15, 30,
+35], and explored sophisticated notions of fairness that incor-
+porate application-level objectives [10, 26, 29, 37], existing
+CCAs fail to provide even the simplest property: per-flow fair-
+ness even when all flows use the same CCA. Fig. 1 and Fig. 2
+show how Cubic [16], BBR [7] and Copa [5], three widely
+deployed CCAs, experience extreme unfairness between flows
+as a result of differences in ACK aggregation or round-trip
+propagation delays (RTprops)1; phenomena that are common
+on the Internet. Appendix E shows unfairness in other CCAs.
+The starvation theorem [3] suggests that these are not
+isolated failures.
+The theorem states that any CCA with
+small self-induced delay or delay variation can starve in the
+presence of jitter (from sources like ACK aggregation or OS
+scheduling delays). To our knowledge, all existing CCAs that
+1BBR’s unfairness is different from RTT unfairness in traditional
+CCAs [16, 18]. For BBR, a small difference in RTprops leads to arbitrarily
+large unfairness as the link rate goes to infinity [3].
+0
+100
+200
+300
+Time (s)
+0
+20
+40
+60
+Tput (Mbps)
+FRCC
+0
+100
+200
+300
+Time (s)
+0
+20
+40
+60
+Tput (Mbps)
+BBRv1
+Figure 1:
+Throughput (Tput) of three flows with round-trip
+propagation delay (RTprop or R) of 10, 20 and 30 ms. BBR starves
+the (blue) flow with R =10 ms.
+0
+100
+200
+300
+Time (s)
+0
+25
+50
+75
+Tput (Mbps)
+FRCC
+0
+100
+200
+300
+Time (s)
+25
+50
+75
+Tput (Mbps)
+BBRv1
+0
+100
+200
+300
+Time (s)
+0
+50
+Tput (Mbps)
+Copa
+0
+100
+200
+300
+Time (s)
+0
+50
+Tput (Mbps)
+Cubic
+Figure 2:
+Three flows with RTprop = 32 ms. The blue flow
+experiences 32 ms of ACK aggregation. Copa and Cubic starve flows.
+are buffer-bloat resistant (i.e., bound delays) cause little to
+no self-induced delay variations and, therefore, starve. This
+happens on realistic paths as shown above.
+We ask if there exists an end-to-end CCA that sidesteps this
+result to provably bound unfairness and the maximum delay,
+albeit at the cost of large (enough) self-induced delay and delay
+variations. We design FRCC (Fair and Robust Congestion
+Controller), the first such CCA with formal guarantees of
+fairness and efficiency under the same pessimistic, worst-case
+model used by [3]. With this, we can be confident that our
+design is robust in any real networks that can be emulated by
+the worst-case model, which includes components like token
+bucket filters and ACK aggregation.
+Starvation occurs because of the way existing CCAs
+coordinate with other competing flows. They do not know
+how many other flows exist and cannot directly communicate
+with each other. To coordinate what is the fair rate, CCAs
+(implicitly) agree on a contract that encodes the fair rate into
+observable congestion signals. For instance, Reno uses fair
+rate ∝1/√
+loss rate [25]. Because of such coupling, even
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2755
+
+
+--- [Page 3] ---
+
+small noise in the congestion signals translates to large errors
+in inferring fair rates, potentially causing flows disagree on
+the fair rate creating unfairness. To our knowledge, all existing
+CCAs that share bandwidth fairly incorporate such a map in
+their design, either implicitly (e.g., Reno [25], Vegas [24]),
+or explicitly (e.g., TFRC [12], Swift [21], Poseidon [34]).
+FRCC incorporates two key ideas to enable fairness in the
+presence of jitter. First, rather than coordinating fair rates
+through congestion signals, FRCC coordinates flow count or
+fairlinkfractions. Flowsindependentlyestimatethebottleneck
+link capacity to know if the fraction of link they currently con-
+sume is more or less than the target fraction encoded in the con-
+gestion signals. Flows adjust their cwnd to consume the same
+fraction of the link as communicated in the congestion signals.
+This reduces the bits of information communicated through
+congestion signals, thereby reducing the impact of noise.
+Second, capacity estimation is notoriously hard ([11],
+§ 5.3), often requiring large probes for high accuracy. Our
+key idea is that FRCC only needs the capacity estimation to be
+accurate enough for flows to know if their current link fraction
+is above or below the target fraction. We precisely compute
+how large and long our probes need to be to build an accurate
+enough capacity estimator. This creates the delay variations
+that we know are necessary to sidestep the pre-conditions in
+the starvation theorem [3].
+Our proofs model the execution of FRCC as a dynamical sys-
+tem, describing both its transient and steady-state performance
+(§ 6). We cover a range of scenarios from ideal links (without
+jitter), links with jitter, and even flows vastly different RTprops
+and multiple-bottleneck links. To exhaustively reason about
+network behaviors, we use a number of analysis tools, includ-
+ing the Z3 SMT (satisfiability modulo theory) solver [27], and
+numerical methods [32]. Our formal approach also uncovered
+previously undocumented behaviors in cwnd-based CCAs that
+occur due to ACK-clocking (§ 5.3.2) and are unrelated to jitter.
+These are interesting in their own right independent of FRCC.
+We implement FRCC in the Linux kernel and empirically
+evaluate it. FRCC’s behavior closely matches our theoretical
+analysis for all the challenging scenarios listed above and
+consistently achieves fairness and efficiency, even when
+state-of-the-art CCAs exhibit starvation (e.g., Fig. 1, Fig. 2).
+Note that our goal was to investigate if it is possible to
+design a CCA that operates at the limits of existing theoretical
+tradeoffs. FRCC’s current design does not consider important
+practical issues such as coexistence with other CCAs,
+shallow-buffers, etc. (§ 2). Further, we had to make several as-
+sumptions (listed in Appendix C) to make our proofs tractable.
+We conjecture that our results are true even without these
+assumptions as supported by our empirical evaluation (§ 7).
+We have open sourced our code at https://github.com/
+108anup/frcc/tree/main described in Appendix A.
+Bottleneck link
+Scenario A
+3 Mbps
+1 Mbps
+Bottleneck link
+Scenario B
+S1
+S2
+1 Mbps
+S1
+3x 1 Mbps
+S2
+Above target
+Below target
+Current loss rate,
+target rate
+Figure 3: [Left] To distinguish between the two scenarios, the red
+(lower) flow must coordinate with the green (upper) flows. [Right]
+Reno uses loss rate to communicate fair rates.
+2
+Related work and motivation
+Starvation theorem statement [3]. On networks with
+jitter, no end-to-end CCA can simultaneously achieve three
+desirable properties: (P1) avoid starvation, i.e., ensure a finite
+bound on the ratio of flow throughputs (s-fairness in [3]), (P2)
+scale to arbitrarily large link capacities (f-efficiency in [3]),
+and (P3) incur only small self-induced delay variation (delay
+convergence in [3]).
+This result applies only to end-to-end schemes, not to those
+relying on in-network support (e.g., XCP [20]) or active queue
+management (e.g. fair queuing). We focus on end-to-end
+CCAs because in-network mechanisms have been historically
+hard to deploy: explicit schemes require header changes (via
+IP or TCP options), which risk packet drops at legacy routers
+and incompatibility with encryption [14].
+Goal. Our goal is to design a CCA that bounds unfairness (P1)
+and scales to arbitrary link capacities (P2). To do so, we give
+up (P3) and create “large” self-induced delay variations.
+Fig. 1 and Fig. 2 illustrate the importance of (P1) and
+(P2). They show common Internet scenarios where starvation
+(P1) occurs even at modest link rates of 100 Mbps (P2). For
+example, two users in a household may have different RTprops
+when downloading from separate CDNs (e.g., YouTube and
+Amazon CloudFront, both using BBR), causing one flow to
+starve. Likewise, when one user connects via Ethernet and
+another via WiFi, the resulting differences in jitter lead to
+starvation under Cubic, Reno, or Copa.
+Note, “large” in giving up (P3) is a relative term. The delay
+variations need to be larger than the amount of jitter in the
+network, but their absolute value can still be small. Hence,
+we can still bound the maximum delay we create and avoid
+buffer-bloat unlike traditional CCAs like Reno and Cubic.
+Existing delay bounding CCAs either do not create delay
+variations at all or their variations vanish with increasing link
+capacity. Consequently, their unfairness increases with the
+capacity, culminating in starvation.
+Starvation freedom is a challenging theoretical problem. To
+date, no delay-bounding end-to-end CCA has been proven to
+avoid starvation, particularly when faced with arbitrary jitter
+patterns as modeled by the CBR-delay network model (Fig. 13
+and [3]). The model is intentionally pessimistic to account
+for a wide range of network behaviors. Designing a CCA for
+it will make it robust to all modeled behaviors.
+2756    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 4] ---
+
+Non-goals. Beyond our primary objectives of bounded
+unfairness, high utilization (scaling to arbitrarily large
+bandwidths), and bounded maximum delay (and delay
+variation), our secondary goal was to design a practical CCA.
+We partially achieve this goal. FRCC converges exponentially
+fast to both efficient and fair rate allocations (its convergence
+time is O(NGlogBDP) RTTs), where NG is the number of flows.
+We do not address other properties that may be desirable
+for a CCA, including, coexistence with other CCAs, operation
+under shallow buffers, handling losses (including detection,
+recovery, and reaction), or short/application-limited flows.
+Our analysis assumes buffers are sufficiently large to avoid
+loss. Here, sufficiently large is relative to the amount of jitter
+and not RTprop. Specifically, FRCC maintains a steady-state
+queueing delay of O(NGD) (§ 6). Where, D is the amount
+of jitter we want FRCC to tolerate. If RTprop = 100 ms,
+NG = 4 flows, and D = 10 ms, FRCC needs 4×10 = 40 ms
+of buffering. In contrast, CCAs like Reno/Cubic/BBR need
+O(RTprop) or 100 ms of buffering. We recently showed that
+buffering smaller than jitter is also an extremely challenging
+scenario involving an additional tradeoff between amount of
+packet loss and convergence time [1].
+Similarly, our community has luxurious desires from CCAs,
+including coexistence with legacy TCP [5, 15, 30, 35] and
+sophisticated fairness notions based on latency or application-
+visible metrics [10, 26, 29, 37]. However, today’s CCAs fail
+to ensure even basic flow-level throughput fairness on simple
+dumbbell topologies where all flows are using the same CCA.
+We need to solve this before pursuing higher ambitions.
+Contracts. The starvation result stems from the way CCAs
+coordinate fair rates with each other. CCAs do not know the
+number of competing flows. To determine their fair rate, they
+must establish some form of agreement. Consider the scenar-
+ios in Fig. 3. If the green (upper) flow in scenario B exactly
+emulates the cumulative effect of the three green flows in sce-
+nario A, then the red flow cannot tell the difference. Without
+disambiguating the scenarios, the flow cannot have different
+actions (sending rates) in the two scenarios. Yet, its fair rate
+is different (1 and 2 Mbps in scenario A and B, respectively).
+In practice, the red flow assumes the green flow is cooperat-
+ing through a “contract”—an a priori agreed-upon encoding of
+fair rates into observable network signals. For example, Reno
+uses the contract function “rate = const/√
+loss rate” [12,
+25]. While this is not explicit in the algorithm, the emergent
+behavior is that all flows measure the average packet loss rate
+and calculate a “target rate” using this formula. Then they
+update their actual sending rate to move towards this target
+(Fig. 3). Returning to scenario B from Fig. 3, both the red
+and the green flows measure the same loss rate, and hence,
+have the same target rate, but they have different sending rates.
+Thus, at least one of them will adjust their rate until they reach
+equal sending rates in steady-state.
+To our knowledge, all existing CCAs employ similar
+coordination methods, though the signals they use and the
+Discrepancy
+in fair rate
+Bounded error
+in link fraction
+1
+Figure 4: [Left] Noise creates discrepancies in inferring fair rates.
+The discrepancy increases with increasing link capacity. [Right] Link
+fraction gets rid of the asymptote on the Y-axis, ensuring bounded
+error in inferring fair link fraction for bounded jitter.
+shape of the contract function may vary. E.g., Vegas, FAST,
+Copa, and Swift, use delay instead of loss [5, 6, 21].
+Why does the starvation occur? The issue with this coordina-
+tion is that rate gets coupled with noise in congestion signals.
+The contract maps a small range of congestion signals to a
+large range of rates. As a result, even small noise in congestion
+signals creates large errors in inferring fair rates, causing
+different flows to disagree on what is the fair rate (Fig. 4). This
+disagreement increases with increasing link capacity, and due
+to the asymptote on Y-axis, creates arbitrarily large ratios of
+flow throughputs (starvation) for arbitrarily large capacity.
+3
+Key insights to overcome starvation
+Why do strawman solutions fail and key learnings. From
+Fig. 3, to coordinate fairness, we need some form of contract
+(e.g., rate-vs-delay mapping). And, the asymptote in such
+contracts is the main culprit causing starvation (Fig. 4). The
+problem is that there is no rate-vs-delay curve that (1) is
+asymptote-free, (2) scales to arbitrarily large rates, and (3) is
+monotonically decreasing. Monotonic decrease is needed as
+increasing rate with delay creates a positive feedback loop.
+This explains why decades of research have failed to resolve
+starvation: no amount of noise filtering or parameter tuning
+can eliminate the asymptote. At high link capacities, even
+microsecond-level jitter causes large divergence in the inferred
+fair rates. Adjusting parameters only shifts the asymptote
+rather than removing it. For example, Vegas uses the contract
+rate = αVegas/delay.
+Increasing αVegas allows Vegas to
+tolerate up to 10 ms of jitter on a 100 Mbps link by maintaining
+a 10 ms queueing delay. However, this tuning dramatically
+increases delay at lower capacities—e.g., 1 s of queueing at
+1 Mbps—and the asymptote resurfaces at higher capacities
+(e.g., 1 Gbps). Similarly, changing the contract shape (e.g.,
+rate =1/delay2 [21]) does not eliminate the asymptote, and
+contract proposals such as “rate =Cmaxe−delay” [3] only elim-
+inate the asymptote by give up scaling to arbitrary bandwidths.
+First key insight. Instead of relying on a contract that
+coordinates the fair rate across flows, we split the challenge
+for determining fair rate into two parts. Our first insight is that
+inter-flow coordination should focus on the fair link fraction,
+i.e., the fraction of the bottleneck link that flows should
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2757
+
+
+--- [Page 5] ---
+
+occupy in steady-state. For example, we use the contract:
+“target_link_fraction = min(1, D/delay)” (shown in
+Fig. 4). This eliminates the asymptote in the contract since
+the link fraction is naturally bounded by 1. Consequently,
+bounded noise in delay measurements creates bounded errors
+in inferring the fair link fraction. Here, D is a tunable bound
+on the amount of network jitter that we want to tolerate.
+Each flow updates its cwnd to ensure that the fraction of
+the link it consumes is equal to the globally observable target
+fraction, so that in steady-state, all flows occupy the same
+fraction of the link (fairness). Flows increase their cwnd if their
+current fraction is less than the target and decrease otherwise.
+Second key insight. The above requires that flows estimate the
+fraction ofthe linkthey currently consume. One way to achieve
+this is by estimating their throughput and the bottleneck link ca-
+pacity, i.e., current_fraction = throughput/capacity. To
+estimate capacity, flows can “probe” the link by temporarily
+increasing their cwnd. However, estimating link capacity is a
+surprisingly difficult problem [11, 22, 23], with accurate esti-
+mates requiring large probes (§ 5.3). Our second key insight is
+that our capacity estimates only need to be accurate enough for
+flows to determine if their current fraction is above or below the
+target so that they can change their cwnd in the correct direction.
+We precisely compute how large capacity probes need to
+be, allowing us to make our probes, and hence, delay variation
+smaller than otherwise needed (§ 5.3). Specifically, our probes
+increase the cwnd by:
+E =
+throughput
+target_fraction ·γD
+(3.1)
+where γ > 1 is a constant. This probe increases queuing
+delay by E/C seconds, i.e., all packets packets have to wait
+behind (the transmission delay of) the increased inflight. The
+starvation theorem does not apply to this design due to the
+resulting delay variation.
+This probe is large enough for us to compare the target
+and current fraction. The intuition is that when the target and
+current fractions are close (their ratio is close to 1), the flow’s
+throughput ≈target_fraction ∗C. As a result, the probe
+size (Eq. 3.1) is close toCγD, and creates γD delay. Jitter can
+only impact the expected delay by ±D. If the measured delay
+is more than γD+D, then the probe must have created more
+than γD delay, which can only happen if the flow’s throughput
+is larger than the target fraction of the link. Conversely, if the
+excess delay is less than γD−D, flow’s throughput is smaller.
+When all flows’ excess delays are close to γD, they consume a
+fraction of the link that is close to the target fraction (fairness).
+Summary. We use delays larger than jitter to (accurately
+enough) coordinate fair link fractions, and delay variations
+larger than jitter to (accurately enough) estimate link capacity
+(and current link fraction). These allow us to ensure that
+the link fractions of all flows (and correspondingly the
+throughputs of the flows) are close to each other (fairness).
+Probe
+slot
+Cruise
+slot
+RTprop
+probe
+Simultaneous
+probes (collision)
+Transient
+perturbation
+Figure 5: Timeseries of FRCC’s cwnd and RTT.
+3.1
+Leveraging the insights
+We combine these insights to build a practical congestion
+control loop. For reference, Alg. 2 in § B.1 provides FRCC’s
+pseudocode. For convenience in implementation and analysis,
+we perform a change of variables:
+current_flow_count=1/current_link_fraction
+target_flow_count=1/target_link_fraction
+FRCC tracks estimates for four independent quantities: (1)
+RTT ( d
+rRTT), (2) RTprop (bR), (2) throughput (\
+rtput), and (4)
+link capacity (bC), where d
+rRTT−bR gives delay. These give us
+the current (c
+NC) and target (c
+NT) flow counts as:
+c
+NC =
+bC
+\
+rtput
+and
+c
+NT =ContractFunc( d
+rRTT−bR)
+(3.2)
+Where ContractFunc is our contract function (§ 5.1).
+Since we cannot simultaneously measure all four quan-
+tities [7], we use a structure similar to BBR [7] to obtain
+estimates over time (Fig. 5). We divide time into rounds,
+which are further divided into slots. There are two types of
+slots: (1) probe and (2) cruise. Each flow independently selects
+exactly one slot in the round as its probe slot. Flows make this
+choice uniformly randomly and freshly for each round.
+In the probe slot, FRCC temporarily increases cwnd to
+estimate link capacity (bC). In the cruise slot, FRCC retains
+its cwnd to measure throughput (\
+rtput) and RTT ( d
+rRTT). In
+addition to the slots, every TR = 30 seconds, FRCC flows
+launch a synchronized RTprop probe to empty queues and esti-
+mate RTprop (bR), similar to BBR [7]. To ensure synchronized
+draining, we assume clock synchronization (through the Net-
+work Time Protocol) to keep implementation simple, though
+we could use BBR’s implicit synchronization as well (§ B.4).
+Finally, at the end of the probe slot, FRCC updates cwnd to
+move the current and target flow counts closer to each other.
+Note, we use a cwnd instead of rate to keep a closed-loop
+system and bound queues. We pace packets at the rate of
+2·cwnd/bR to avoid transmitting bursts while ensuring we do
+not get rate-limited. This is a common-case optimization and
+does not affect performance under worst-case jitter.
+2758    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 6] ---
+
+4
+Design requirements
+Notation. We use hats to denote estimates (e.g., c
+NCi, c
+NTi)
+and no annotation to denote true values (e.g., NCi, NT), and
+subscript of i for flow fi. We drop the subscript when clear
+from context. You can find our glossary in Table 1 and Table 2.
+Desired bounds. Flows update their cwnd based on their
+local estimates, c
+NTi and c
+NCi. To ensure throughput ratios are
+bounded, we need to ensure: (D1) the target flow counts of all
+flows are within a multiplicative bound of each other, and (D2)
+each flow is able to infer when its true current flow count (NCi)
+(inverse link fraction) is multiplicatively far from its local
+target (c
+NTi). On combining these, the true current flow count
+(inverse link fraction) NCi is close to local target (c
+NTi), which
+is close to the single true global target (NT). So the true link
+fractions (NCi) (and thus throughputs) are close to each other.
+Meeting D1/D2. From Eq. 3.2, bC and \
+rtput affects error in c
+NC
+and the shape of our ContractFunc affects how errors in delay
+( d
+rRTT −bR) propagate to c
+NT (D1). Finally, errors in both c
+NC
+and c
+NT affect (D2). It is challenging to directly reason about
+necessary error bounds on the four individual estimates to
+meet (D1/D2). We build bC using our second key insight (§ 3)
+and we build other estimates d
+rRTT, bR, and \
+rtput to be the best
+achievable under our error model below. We then show that
+our estimates are indeed sufficient to meet (D1/D2). We do
+this by encoding all the error bounds in the Z3 SMT solver [27]
+and show that FRCC converges to bound fairness (§ 6.3).
+Error model. We need to consider three sources of errors:
+(E1) network jitter, (E2) RTT (and throughput) variations
+due to a combination of multiple hops (§ 5.3), difference in
+feedback delay (RTprop) of flows (§ 5.3), and interleaving
+of packets across flows (§ B.3), and (E3) self-induced delay
+variations due to our capacity probes.
+Tolerating E1/E2. (E2) errors are unrelated to network jitter
+and even occur on smooth, non-time varying links. In two in-
+stances, we were able to model these and mitigate their impact
+(§ 5.3, § B.3). Outside of these two instances, we treat (E2)
+same as (E1). We design FRCC to tolerate a bounded (config-
+urable) amount of cumulative errors due to (E1) and (E2). We
+model these errors as non-deterministic (or arbitrary) similar
+to prior work [1, 3, 4], as opposed to stochastic (or random).
+Arbitrary delays (as opposed to stochastic delays) can express
+causal effects and correlations, allowing us to be provably
+robust to a number of sources of jitter in real networks [4].
+Tolerating E3. (E3) affect us in two ways. First, when a flow
+probes, it temporarily inflates RTT and reduces throughput
+for other flows, potentially skewing their estimates of d
+rRTT, bR,
+and \
+rtput. Fortunately, these are one-sided errors: RTTs only
+increase and throughputs only decrease. We filter them by com-
+puting d
+rRTT and bR as the min over RTT samples, and \
+rtput as
+the max over throughput samples collected in cruise slots. This
+bounds additive error in d
+rRTT (best achievable under (E1/E2)).
+For \
+rtput, we measure throughput over packet-timed RTT
+0
+10
+20
+30
+40
+Queuing delay estimate (delay)
+0
+10
+20
+30
+40
+Target ﬂow count, NT
+(current delay,
+target flow count)
+current flow count1
+current flow count2
+Contract (NT = delay/θ)
+Figure 6: Contract used by FRCC. FRCC updates cwnd so that the
+target and estimated flow counts move towards each other.
+intervals (i.e., the interval starts with sending a packet and ends
+with receiving its ACK) which bounds multiplicative error
+(also the best achievable [1]). We show in § B.3 that measuring
+throughput over other (even potentially longer) intervals is
+either sub-optimal or provides no additional benefit.
+Second, if two flows probe for capacity together, their
+induced delays add up and they misestimate capacity (bC). Our
+round and slot design is specifically to address the second
+issue. Probing in exactly one slot of the round reduces the
+likelihood of simultaneous probes from multiple flows (§ 5.4)
+and helps retain fairness despite probe collisions.
+5
+Design
+We begin by describing FRCC’s contract which governs its
+steady-state performance (§ 5.1). Then we describe how we
+perform cwnd updates to reach this steady-state (§ 5.2). The
+remaining subsections detail the design of our estimates and
+slots (§ 5.3, § 5.4, § B.4). In these, tolerating the error bounds
+directly guides our design of estimates: c
+NT (§ 5.1), bC (and c
+NC)
+(§ 5.3 for (E1/E2), and § 5.4 for (E3)). We covered d
+rRTT and
+\
+rtput in § 4, and bR in § 3 and § B.4.
+5.1
+FRCC’s Contract
+We use the contract (Fig. 6):
+Flow count=ContractFunc(delay)=delay/θ
+(5.1)
+We interpret it in two ways: (1) “target flow count as a
+function of current delay” (NT = delay/θ), and (2) “target
+delay as a function of current flow count” (delay = θ·NC).
+The constant θ>0 denotes the seconds of delay we maintain
+per flow in steady-state, and amount of noise we tolerate: ∆R of
+noise in delay creates ∆R/θ of additive error in c
+NT. Increasing
+θ increases error tolerance at the expense of delay. In steady-
+state, without jitter, NT = NC = NG, where NG is the ground
+truth number of competing flows (§ 6.2). I.e., all link fractions
+(and throughputs) are equal and there is θNG of queuing delay.
+Past CCAs have employed different contract shapes, e.g.,
+linear (Copa/Vegas/FAST, delay=1/rate [5, 6, 36]), square-
+root (Swift, delay = 1/√
+rate [21]), square (Reno [18, 25],
+loss_rate = 1/rate2). The shape affects three metrics [2]:
+(M1) delaygrowthwithflow count, (M2) tolerance to jitter, and
+(M3) fairness with multiple bottlenecks (e.g., Reno achieves
+minimum potential delay fairness, while Copa/Vegas/FAST
+achieves proportional fairness [31]). Since a single choice
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2759
+
+
+--- [Page 7] ---
+
+affects all these metrics, they are at odds with each other [2].
+While our contract bounds additive error in c
+NT, we only
+needed to bound multiplicative errors (for D1 in § 4). The
+logarithmic contract, delay = θlog(NC), gives the optimal
+tradeoff between delay (M1) and noise tolerance (M2) [2, 3].
+Delay grows logarithmically with flow count and multiplica-
+tive error in c
+NT is bounded (c
+NT =e(delay±∆R)/θ =e±∆R/θ·NT).
+However, this creates unfairness with multiple bottlenecks
+(M3) (§ 6.5), so we use do not use this contract.
+5.2
+Congestion window update
+At the end of the probing slot, flows update their cwnd to move
+the current and target flow counts closer to each other (Fig. 6).
+When current exceeds target (c
+NC > c
+NT), FRCC increases cwnd.
+This decreases the current flow count (increases link fraction),
+and increases the target (due to the increased delay). Likewise,
+when current is below target (c
+NC < c
+NT), FRCC decreases cwnd.
+The cwnd updates are proportional to the gap between c
+NC
+and c
+NT. This enables: (1) exponentially fast convergence to
+both efficiency (link utilization) and fairness in O(log BDP)
+rounds, and (2) stability, as proportional updates dampen as
+FRCC gets closer to steady-state, similar to [17, 36].
+Algorithm 1: FRCC cwnd update.
+1 Function updateCwnd()
+2
+c
+NT ←( d
+rRTT−bR)/θ ▷cwnd ←cwndδH if c
+NT =0
+3
+bC ←E/c
+∆d ▷bC ←∞if c
+∆d ≤0 (See § 5.3)
+4
+c
+NC ←max(bC/\
+rtput,1) ▷As rtput ≤C
+5
+c
+NC ←min(max(c
+NC,c
+NT/δL),c
+NTδH) ▷Clamps
+6
+target_cwnd ←cwnd·c
+NC/c
+NT ▷Alternate cwnd update
+7
+target_cwnd ←cwnd·(bR +θc
+NC)/(bR +θc
+NT)
+8
+cwnd ←(1−α)·cwnd+α·target_cwnd ▷α=1
+9
+cwnd ←ceil(cwnd) ▷Ensures at least 1 packet inflight
+10 end
+Alg. 1 shows two cwnd updates: line 7 (main) and line 6
+(alternate). The main update is more stable and we use it in
+all our analysis and implementation. We only use the alternate
+update in our proof for the jittery link in § 6.3 as Z3 times out
+for the main update (Assumption 6.).
+The main update focuses on moving only the “queu-
+ing delay” portion of the RTT towards our target delay
+from θc
+NT to θc
+NC.
+Intuitively, cwnd maps to “packets in
+queue + packets in pipe”. The main update isolates and
+scales the term for “packets in queue”, i.e., it is same as:
+target_cwnd = rate ∗target_RTT = cwnd/ d
+rRTT ∗(bR +θc
+NC).
+In contrast, the alternate update is more aggressive (less stable)
+and scales the entire cwnd. Specifically, the alternate update
+requires θNG >R for stability, i.e., the queuing portion of the
+cwnd is more dominant than the pipe portion.
+Clamps on cwnd. The clamps (line 4 and line 5) help manage
+the impact of noise in estimates in three ways. First, while
+RTT error
+Figure 7: Lines show increasing E. A small range of excess delays
+map to a large range of potential link capacities. For C = 600, only
+the largest three probes create more than ∆R of excess delay.
+without jitter, FRCC converges to a fixed-point, with (worst-
+case) jitter, FRCC converges to a region around the fixed-point
+(§ 6.3). The clamps (among other parameters, and the amount
+of jitter) affect the size of the region. Tighter clamps imply
+a smaller region but slower convergence. Second, our capacity
+estimate is more accurate for some flows than others (§ 5.3.1).
+With worst-case errors, some flows may move away from the
+steady-state region. The clamps curb these bad movements.
+The onus is on the flows with accurate estimates to bring the
+system to convergence. Lastly, clamps help curb perturbations
+when FRCC misestimates capacity due to probe collisions.
+5.3
+Link capacity estimate
+Prior work has explored various capacity estimation tech-
+niques, including packet-pairs/packet-trains [22, 23] and max
+ACK rate [7, 15]. All these methods have known issues, e.g.,
+instead of estimating capacity, max ACK rate and packet-trains
+may only measure available bandwidth and asymptotic dis-
+persion rate [11] when other flows consume a part of the link.
+The three sources of errors (E1/E2/E3) make capacity
+estimation hard. We elaborate why and describe our solutions.
+Specifically, for (E1) we ensure that our capacity probes are
+large enough (§ 5.3.1), for (E2) we measure persistent change
+in delay created by the probes as opposed to transient change
+(§ 5.3.2) and for (E3) we have our slot/round design (§ 5.4).
+5.3.1
+Probe size
+Problem (Fig. 7). Consider the simple estimator we used in
+§ 3. It increases cwnd by E packets, and measures the excess
+delay created by the probe (c
+∆d =∆RTT) to estimate capacity
+as: bC =E/c
+∆d. When there is no noise, the estimator is correct
+(as c
+∆d = ∆d = E/C). When there is noise, i.e., c
+∆d =∆d±∆R,
+this estimator has a similar issue as we saw in Fig. 4. It maps
+a small range of c
+∆d values to a large range of bC values (Fig. 7).
+Small noise in c
+∆d (=∆d±∆R) creates large errors in bC. The
+same issue happens for an estimator based on the increase in
+throughput (or ACK rate) due to probe.
+Unless E > C∆R, the excess delay is less than jitter, and
+the CCA cannot disambiguate between queueing delay and
+noise. C is the quantity we are trying to estimate, so we cannot
+set such a probe size a priori, to bound the error in bC and
+consequently c
+NC. Though it may be possible to binary search
+2760    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 8] ---
+
+RTT seen by 
+transmitted packet
+Pkts part of probe
+Initiate probe end
+Probe ends
+Drain
+(RTT)
+Gain + Wait
+(2RTT)
+TP = RTT
+Probe starts
+Figure 8: Life-cycle of a probe slot.
+for such a probe size on the fly.
+Solution. We only need to decipher if our current flow count
+is above or below target. For this purpose E = c
+NT\
+rtput·γD
+is enough. Under this probe size, if we propagate the impact
+of errors from c
+∆d to c
+NC, we get (derivation in § B.2):
+c
+NT
+c
+NC
+= \
+rtput
+rtput
+c
+NT
+NC
+± ∆R
+γD =γR
+c
+NT
+NC
+± 1
+γ
+(5.2)
+Here, rtput and NC are the true throughputs and current flow
+count (inverse fraction) of the flow, γR is the multiplicative
+error in throughput, and γD controls the tradeoff between the
+seconds of delay variation we create, and the accuracy of our
+estimate. We get the second equality whenever ∆R≤D. Thus,
+the total error in c
+NT/c
+NC is bounded and the flows update cwnd
+in the correct direction when c
+NT and NC are far (D2).
+Note, the additive error in c
+NT/c
+NC causes some flows to have
+more accurate estimates than others. This asymmetry occurs
+in two ways. First, the estimate is more accurate for flows
+whose c
+NT and NC are far apart (c
+NT/NC is too large or too small).
+Second, when c
+NT/NC ∈(0,1), i.e., additive error has greater
+impact than when c
+NT/NC ∈(1,∞). In essence, flows getting
+more than their fair share have better estimates. While not
+all flows may move towards the steady-state region in a given
+round, flows that are too fast or too far from the fair share are
+more likely to move in the correct direction and update the
+global NT to help bring the system to convergence.
+Note, bounding multiplicative error in c
+NT/c
+NC relative to
+c
+NT/NC, to avoid asymmetries, is same bounding error in c
+NC
+which requires O(C) probe size as shown above.
+5.3.2
+Probe timing
+With different RTprops, or multiple hops (either bottleneck
+or non-bottleneck), probes incur transient variations in RTT
+(and throughput) even without jitter. Bottleneck hops are
+those that have other competing FRCC flows (Fig. 17), while
+non-bottleneck hops do not have any competing flows (Fig. 9).
+With different RTprops and multiple bottleneck hops there
+is also persistent bias in excess delay, i.e., the ground truth
+∆d̸ =E/C. We explain the cause and impact of persistent bias
+in § 6.5. Here, we discuss the transient variations. Both the
+variations and biases are interesting in their own right, they
+even occur in packet-level simulation, and to our knowledge
+have not been documented before.
+Multiple hops. Fig. 9 shows that the immediate excess delay
+created by the probe is more than the transmission delay of the
+0
+250
+500
+750
+1000
+Time (ms)
+40
+60
+80
+RTT (ms)
+TX
+ACK
+0
+100
+200
+300
+Time (ms)
+40
+60
+80
+RTT (ms)
+TX
+ACK
+Figure 9:
+Packet trains may not measure the true link capacity.
+TX shows RTT of a packet vs. its transmission time, while ACK
+shows the RTT of a packet vs. its ACK time. [Top] C1 and C2 are
+non-bottleneck hops,C0 is the bottleneck hop. Behavior in left plot
+occurs wheneverC1,C2 ≥C0/2. [Left] with extra hop (e.g.,C1,C2),
+[Right] with only the bottleneck hop.
+0
+500
+1000
+Time (ms)
+25
+50
+75
+100
+RTT (ms)
+TX
+ACK
+0
+500
+1000
+Time (ms)
+25
+50
+75
+100
+RTT (ms)
+TX
+ACK
+Figure 10:
+Oscillations occur during probes when flows have
+different RTprops. The excess delay without oscillations̸ = the
+transmission delay of excess packets. Oscillations dampen over time.
+Left shows probe of short RTprop flow and right shows long.
+0
+500
+Time (ms)
+25
+50
+75
+100
+RTT (ms)
+TX
+ACK
+0
+500
+1000
+Time (ms)
+25
+50
+75
+100
+RTT (ms)
+TX
+ACK
+Figure 11: Paced probes reduce oscillation magnitudes. Left shows
+probe of short RTprop flow, and right shows long.
+probe. Initially, the sending rate of the probe is higher than the
+capacity of the hops. As a result, transient packets queue up at
+the non-bottleneck hop, before also queuing at the bottleneck
+hop where the other flow is competing. The extra delay sub-
+sides when the packets become ACK-clocked in the next RTT.
+Different RTprops. Fig. 10 shows oscillations in RTT caused
+by differences in feedback delay of flows. We provide intuition
+for the case when the longer RTprop flow probes (the other
+case is similar). At the start of the probe, the long flow’s
+sending rate is high (increased delay). This reduces the ACK
+rate (and sending rate) of the short flow. The burst packets
+take a while to trigger new transmissions (in response to their
+ACKs) as the probing flow’s RTprop is long (decreased delay).
+Each time the burst gets paced by the bottleneck and reduces
+in rate and eventually dies out.
+Design of probe. In lieu of these transient variations, we
+make two choices (illustrated in Fig. 8): (1) we increase
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2761
+
+
+--- [Page 9] ---
+
+and decrease our cwnd over an RTT instead of abruptly (this
+reduces the magnitude of oscillations (Fig. 11), and (2) we
+wait for two RTTs before starting to measure excess delay.
+This eliminates the variations due to multiple hops, but the
+feedback delay based variations may not fully vanish.
+We account any oscillations that do not vanish under (E1).
+This is okay because these oscillations are bounded indepen-
+dent of our design parameters, i.e., (P1) they largely depend
+on the differences in RTprops, and (P2) do not asymptotically
+grow with our probe sizes. As a result, the relative impact of
+these vanishes as we increase our delay/delay variations. We
+found it hard to mathematically prove (P1/P2) and empirically
+validated them (not shown).
+We measure excess delay as the minimum RTT over the
+“packets part of probe” in Fig. 8 minus the minimum RTT in
+the slot before the probe.
+5.4
+Duration and number of slots
+Duration of slots. Since slots allow us to coordinate probes,
+all slots, including probe and cruise, need to have the same
+duration, i.e., 4RTTs (§ 5.3.2). We conservatively set the
+slot size as the 4× the maximum RTT observed in the
+slot (for both probe and cruise slots). Note, slot durations
+may differ across flows as RTTs may differ due to noise or
+differences in RTprops. Empirically, FRCC works despite
+this (§ 7). Our formal proofs assume that slot durations are
+equal (Assumption 2.). We experimented with a design that
+hard-codes a large enough slot duration, but deprecated this
+as FRCC empirically worked without it.
+Number of slots. When probes overlap, flows may under-
+estimate capacity (and NC) and incorrectly decrease cwnd.
+Underestimation occurs because excess delays add up (c
+∆d is
+larger so bC = E/c
+∆d is smaller).
+More slots decrease the probability of such overlaps at
+the cost of increasing convergence time. We dynamically
+set the number of slots to be linear in flow count as kc
+NT, with
+the intuition that c
+NT = NG in steady-state. In transient state,
+c
+NT may not equal NG. To ensure enough slots, we set the
+minimum number of slots to Kmin = 6. When there are too
+many probes for the number of slots, the natural increase in
+delay will increase c
+NT and the number of slots. For practical
+reasons, our implementation also clamps slot count above
+(Kmax = 20). C.f. BBR [7] uses 8 slots. We investigate the
+impact of the upper clamp empirically (Appendix E).
+Note that with slot count linear in NG, while the probability
+of some probes colliding is high due to the birthday paradox,
+the probability of a particular flow colliding is low (§ B.5).
+Thus, each flow has infinitely many rounds where its probes
+do not collide, and it makes progress towards fairness.
+Additionally, flows that collide yield bandwidth to other flows,
+but each flow is equally likely to collide, so on average, the
+flow throughputs are still equal (§ 6.4, § 7).
+Jittery link
+Fluid model
+1 NCi, NTi,
+rtputi, rRTTi
+3 NCi[r + 1],
+NT[r + 1]
+2
+c
+NCi, c
+NTi, [
+rRTTi,
+\
+rtputi, bCi, bRi
+Time
+cwndi
+cwndi[r+1]
+±∆R, γR
+Figure 12: Process for deriving state transition function.
+Figure 13: Jittery link (CBR-delay model from [3]). NG flows, f1 to
+fNG, on a dumbbell topology, with capacityC pkts/sec, infinite buffer,
+and RTprop of Ri for flow fi. The jitter boxes can delay packets by
+D seconds non-deterministically (or arbitrarily) to model (E1/E2)
+errors in § 5. Ideal link uses D =0.
+6
+Analysis and proofs
+We describe highlights of our analyses, with details in
+Appendix C. We use three network models corresponding to
+our error models (§ 4): (1) jittery link (E1/E2/E3) (Fig. 13),
+(2) ideal link (E2/E3), and (3) fluid model (E3) only.
+We analyze FRCC under four different settings, each
+providing unique insights into the FRCC’s dynamics and
+performance guarantees.
+Our split of these four settings
+is governed by the tractability of the analyses tools under
+non-linearity (different RTprops and multiple bottlenecks),
+stochasticity (probe collisions) and non-determinism (jitter).
+§ 6.2 Ideal link, NG flows, equal RTprop, no probe collisions.
+§ 6.3 Jittery link, 2 flows, equal RTprop, no probe collisions.
+§ 6.4 Ideal link, 2 flows, equal RTprop, with collisions.
+§ 6.5 Fluid model, different RTProps & multiple bottlenecks.
+Based on our analysis of these settings, we conjecture that
+FRCC guarantees bounded unfairness with high probability
+(over the algorithm’s randomness in choosing the probe slot)
+on well-behaved network topologies (i.e., full rank routing
+matrix [36]), including those with jitter and multiple hops.
+6.1
+Approach
+Our analyses proceed by deriving a state transition function
+that describes how the system state evolves after each round
+of FRCC’s cwnd updates. We use a three step process to derive
+this function (Fig. 12):
+Notation. We represent state in terms of the current and target
+flow counts. We use the suffix [r+1] to denote state in next
+round, ⟨NCi[r+1],NT[r+1]⟩, and no suffix for current round.
+1 Fluid reference execution. We want to make statements
+about the gap between flow throughputs and error between
+our estimates and true values. However, due to (E1/E2), even
+when all cwnds, link capacities, flow count are fixed (non-time
+varying), there are variations in RTT and throughput. So there
+2762    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 10] ---
+
+is no single true value of RTT, throughput, or link fraction.
+To deal with this, we define a “fluid reference execution”, to
+define true values. Our proofs describe how these reference
+values (or state) evolve over time. The real state, RTT, and
+throughput hover around the reference values (§ 6.3).
+We define the hypothetical fluid reference execution as
+one that runs parallel to the real one but without (E1/E2). It
+shares the same network parameters as the real execution
+(e.g., C, NG, Ri, etc.). Given some initial cwndi, we define the
+reference (true) values for rRTT, rtput, (and consequently,
+NCi, NT), as the RTT and throughput in the fluid execution.
+These are solutions to the two fluid model equations: (1)
+rtputi = cwndi/rRTTi and (2) ∑irtputi = C. These yield a
+unique solution to rRTTi and rtputi [36], and consequently
+NCi (= C/rtputi) and NT (= (rRTTi −Ri)/θ). Note, we use
+the same reasoning to define the excess delay created by a
+probe of size E as ∆d =E/C.
+2 Bounds on estimates. We respectively define ∆R and γR2
+as additive error in a RTT measurement and multiplicative
+error in a throughput measurement in the real execution
+relative to the reference rtputi and rRTTi. These represent
+cumulative errors due to (E1/E2). Using these, we derive
+bounds on FRCC’s estimates ( [
+rRTTi, \
+rtputi, c
+NCi, c
+NTi) relative
+to the reference state (similar to Eq. 5.2).
+3 Next state(s). We plug-in the bounds into FRCC’s cwnd
+update rules (§ 5.2). This yields the (possible) cwndi[r +1]
+in the next round and consequently the next reference state
+⟨NCi[r+1],NT[r+1]⟩, as a function of the current state, design
+(γ, θ, etc.) and network parameters (∆R, Ri,C, etc.).
+Our analyses study the evolution of this function, assuming
+non-time varying link capacity and flow count. When these
+change, we restart the evolution from a new initial state, similar
+to CCmatic [1]. We show convergence for all initial states.
+Assumptions. Since we model FRCC’s execution at the gran-
+ularity of rounds, we make several simplifying assumptions
+about the slot-level execution. For instance, we assume that
+rounds and slots of flows align (they have the same durations
+and start/end times). We assume that flows update cwnds
+synchronously (i.e., all flows first make estimates, then update
+their cwnd), in reality flows may update cwnd one-after-another
+(sequentially) (we relax this assumption in § 6.4). We detail
+all these assumptions and more in § C.2.
+Apart from describing FRCC’s dynamics and performance,
+the primary purpose of our analysis is to demonstrate that
+FRCC correctly handles jitter—a worst-case (or adversarial)
+element controlled by the network. Since, aspects like the
+randomness we use to decide probing slots which affects
+probe collisions are not in control of the adversary, we believe
+it is okay to rely on numerical and empirical methods for
+validating these components like any other CCA evaluation.
+2While ∆R is a pure network parameter. γR depends on the RTT we
+maintain. Larger θ decreases γR (γR is effectively
+RTT
+RTT±∆R , from \
+rtputi
+rtputi ).
+These assumptions make our analysis tractable. Empirically,
+FRCC works even though these assumptions do not hold (§ 7).
+6.2
+Ideal link (Theorem 6.1)
+THEOREM 6.1. On an ideal link (Fig. 13) with equal RTprops,
+assuming no probe collisions occur, under assumptions in
+§ C.2, FRCC ensures fairness, i.e., every flow’s steady-state
+sending rate isC/NG, and RTT is R+θNG.
+Proof sketch. The proof (Appendix C) mathematically
+describes for an arbitrary number of flows what we see in
+Fig. 14 (a) for the behavior of two flows. NCi and NT move
+towards NG, and in steady-state, ∀i.NCi = NT = NG. This
+implies (1) 100% utilization (since delay = θNT = θNG > 0)
+and (2) fairness (equal NCi imply equal throughputs, since
+NCi =C/rtputi (definition of NC (§ 6.1)).
+Our proof shows that with equal RTprops, there are no
+(E2) errors and the ideal link is equivalent to the fluid model
+(Lemma C.1). Thus, our estimates are error-free ( c
+NCi = NCi,
+c
+NTi = NTi). We substitute these into the cwnd update to get the
+next state, and state transition function (Eq. C.6, Eq. C.7).
+We show that under the transition function, the gap between
+NT and NG, i.e., |NT[r] −NG| decreases multiplicatively (or
+exponentially fast) each round. Likewise, the gap between
+NCi[r] and NG, decreases multiplicatively.
+For the ideal link, our proof works for all design parameter
+choices as long as they are non-zero and positive. Since there
+are no errors in estimates, we do not need clamps on the cwnd
+(i.e., δH =∞, δL =∞). Our probes just need to create non-zero
+delay (γ>0, D >0), and we need to create non-zero seconds
+of queueing per flow (θ>0).
+6.3
+Jittery link (Theorem 6.2)
+THEOREM 6.2. On a jittery link (Fig. 13), with NG =2 flows,
+both having equal RTprops, assuming no probe collisions,
+and under assumptions in § C.2, FRCC bounds unfairness
+(avoids starvation). Specifically, it ensures that the ratio of
+steady-state flow throughputs (in the corresponding fluid
+reference execution), i.e., rtput, is at most 6.6×.
+Proof. The evolution of FRCC on jittery link is similar to ideal
+link. The key difference is the state transition function gives a
+set of possible next states instead of a unique next state and con-
+sequently FRCC converges to region instead of a fixed-point.
+The lemmas (Lemma C.6, Lemma C.7, Lemma C.8, proved
+in § C.4), summarized in Fig. 15, show that for all initial
+states, all trajectories (despite jitter) converge to the shaded
+region, and then stay in that region. As a result in steady-state,
+NCi ∈[6.6,6.6/5.6]. This implies that the reference through-
+puts (rtputi) are at most off by 6.6× (as NCi =C/rtputi).
+Since jitter can emulate different “effective” RTprops , the
+real throughputs can be slightly off this guarantee: if jitter
+doubles the RTT for one flow, but not the other, its throughput
+halves, and the throughput ratio could go from 6.6× to 13.2×.
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2763
+
+
+--- [Page 11] ---
+
+1
+2
+3
+4
+NCi
+1
+2
+3
+4
+NT
+(a) Synchronous
+1
+2
+3
+4
+NCi
+(b) Sequential
+1
+2
+3
+4
+NCi
+(c) Full overlap
+1
+2
+3
+4
+NCi
+(d) Partial overlap (1)
+1
+2
+3
+4
+NCi
+(e) Partial overlap (2)
+Figure 14: Evolution of ⟨NCi,NT⟩over rounds on ideal link for NG = 2 flows. In all the overlaps, NT moves towards 1. With partial overlap,
+NCi increases (link fraction decreases) for the flow that witnesses combined excess delay (d) and decreases for the other flow (e).
+NCi
+NT
+6.6/5.6
+6.6
+3.3
+2.2
+1.8
+0.15
+Lemma C.8
+Lemma C.6
+Lemma C.8
+Lemma C.7 (Top)
+Lemma C.7 (Bottom)
+Figure 15: Evolution of ⟨NCi,NT⟩over rounds on jittery link.
+(a) Partial overlap
+(c) Full overlap
+(b) No overlap
+Probe 1
+Probe 2
+Probe 1
+Probe 2
+Probe 1
+Probe 2
+Figure 16: Probe overlap scenarios. Rectangles represent probe slots
+during which cwnd is high. The red hatched portions show intervals
+where flows measure excess delay. (a) Flow 1 measures combined
+delay while flow 2 does not. (b) Neither flow measures combined
+delay. (c) Both flows measure combined delay.
+Note, we were only tractably able to write and check the
+proofofTheorem 6.2 forNG =2 flows since the numberofstate
+variables, and hence the solving time for Z3, grows with NG.
+Parameters. There is a one-to-one relation between the
+design/network parameters and the performance bounds (e.g.,
+6.6× in the theorem). Given design/network parameters, we
+find the performance bounds using binary search (§ C.4). We
+iterated this a few times to find a reasonable combination
+of parameters and performance bounds. We set the design
+parameters as: γ = 4, α = 1, δH = 1.3, δL = 1.25. In terms
+of the amount of jitter, our design works as long as: delay
+is larger than jitter (θ > ∆R/2), delay variation is larger than
+jitter (D > ∆R), and RTT is large enough to bound throughput
+variations due to RTT variations (γR < 2).
+Additionally, we also need θ∗NG > R for stability, as we
+use the alternate cwnd update (§ 5.2), i.e., less stable update,
+for jittery link proof. This condition is also needed for ideal
+link if we use the alternate update.
+6.4
+Impact of probe collisions (overlaps)
+Types of probe collisions. When the probes of two flows
+collide, either one, neither, or both of them may underestimate
+capacity, depending on exactly how their probes overlap
+(Fig. 16). A probe underestimates capacity when it measures
+the combined excess delay from multiple probes. Since we
+take the minimum of RTT samples in the probe’s measurement
+interval (TP), we measure the combined delay only if the
+entirety of TP overlaps with another flow’s probe slot.
+Transition function(s). We update the ideal link transition
+function to include the impact of probe collisions by updating
+c
+∆d. Specifically, iftwo flows have probe sizes E1 andE2, the to-
+tal excess delay is (E1+E2)/C. The flows could see either c
+∆di
+= Ei/C, or the combined delay. We substitute both these possi-
+bilities for both the flows, to get different transition functions.
+State trajectories. Fig. 14 shows the state trajectories of the
+system under different alignment of probe slots. We get 5
+different functions for the possible probe slot alignments. The
+first two cases are when the probes do not collide. Two flows
+may measure the same state and update their cwnds together
+(synchronous), or one flow may first update the cwnd, causing
+the second flow’s round RTT and throughput estimates ( d
+rRTT
+and \
+rtput) to change before its cwnd update (sequential).3 In
+both cases, the system state converges to the fair and efficient
+fixed-point (NT =NCi =NG =2), shown by the green circle.
+With probe collisions, both flows may measure the
+combined excess delay (full overlap), or only one of them may
+measure the combined excess delay (partial overlap). In full
+overlap, both flows update their cwnd by the same ratio, and
+this does not change their link fractions (no motion along the
+NCi axis). With partial overlap, the flow that underestimates
+capacity yields bandwidth to the other flow. Fig. 14 (d) shows
+the perspective of the flow that yields bandwidth and (e) shows
+the flow that receives bandwidth.
+Note, for two flows, the state of one flow is enough to
+represent the state of the system because NC2 =
+NC1
+NC1−1. (d) and
+(e) are images of each other under this transformation. This is
+because link fractions sum to 1, ∑i1/NCi =1. Since the fixed
+point in (e) is ⟨1,1⟩, the fixed point in (d) is ⟨∞,1⟩.
+FRCC is fair despite collisions. The phase portraits show
+system evolution if the same transition function is taken in
+every round. In reality, the system state will evolve under a
+3If the first flow increases its cwnd, the updates remain synchronous
+because the second flow’s \
+rtput and d
+rRTT do not change. The increased
+cwnd increases RTT and decreases throughput of the second flow, these
+measurements get filtered out by the max/min filters.
+2764    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 12] ---
+
+Link A
+Link B
+f0
+f1
+f2
+Figure 17: Parking lot topology. Flow f0 gets observations from
+both hops, f1, f2 only see a single hop.
+0
+100
+200
+RTT ratio
+0
+100
+200
+Tput ratio (long/short)
+RTT ratio
+1
+2
+4
+6
+8
+Hops
+0
+20
+40
+60
+Tput ratio (short/long)
+hops2
+hops
+Figure 18: Throughput ratios at the fixed point with different
+RTprops (Left), and parking lot topology (Right). The different
+lines correspond to different choices of probe size (γD) relative to
+the RTprop of the short flow (with γD/R ranging from 2−7 to 28).
+Large probe size yields better (lower) throughput ratios.
+superposition of these transition functions each taken with
+some probability. (a), (b) move the system towards fairness
+and (c) does not change fairness (no change to link fractions).
+(d) and (e) do cause one flow to yield bandwidth to another,
+but the system is equally likely to take any of these transitions.
+This is because, both flows have equal slot and measurement
+durations, and we resample probing slot in each round. Hence
+they are equally likely to measure combined excess delay.
+This explains why FRCC is fair despite probe collisions as the
+effects of (d, e) cancel out and (a, b, c) do not cause unfairness.
+Note, collisions do cause NT to decrease creating instability
+and unfairness at short time scales (Appendix E).
+6.5
+Fluid model analysis (different RTprops
+and multiple bottlenecks)
+With different RTprops or multiple bottlenecks, the excess
+delay (∆d) is no longer equal to the transmission delay of
+the probe, i.e., ∆d̸ =E/C. This creates a bias in our capacity
+estimate, and consequently rate allocation. Instead of equal
+throughputs, FRCC’s throughput ratio may be as bad as the
+RTT ratio (not RTprop ratio). With parking lot topology,
+instead of proportional fairness [26] (i.e., a throughput ratio
+of hops), FRCC’s throughput ratio may be as large as hops2.
+Different RTprops. When the short RTT flow probes, the
+excess delay is more than expected. Conversely, when the
+long flow probes, the excess delay is less than expected. We
+give intuition for the short flow probe. During the probe, short
+flow’s rate increases and long’s decreases by the same amount.
+However, since the long flow has larger RTprop, the packets
+in its pipe reduce by a larger amount. These go into the queue,
+increasing the delay beyond the probe’s transmission delay.
+We compute the exact value of the biased excess delay using
+the fluid model (Appendix D). This yields bias in bC, and con-
+sequently bias in c
+NC. We include these biases in the transition
+function and solve for the fixed-point (i.e., next state = current
+state). We use numerical methods to approximate the fixed-
+point as we do not get closed-form expressions for the transi-
+tion function in this analysis (Appendix D). Fig. 18 shows the
+throughput ratios at the fixed-point. The ratio depends on the
+size of our probes (i.e., γD) relative to the short flow’s RTprop.
+With large probes, the throughput ratio approaches 1, while
+with small probes, it approaches the RTT ratio between flows.
+Multi-bottleneck parking lot topology. Fig. 17 illustrates the
+parking lot topology where different flows witness congestion
+signals from different number of hops. As a result, if f1 esti-
+mates the queuing delay to be delay, then f0 witnesses a delay
+of hops·delay. Since CCAs coordinate fairness through con-
+gestion signals (§ 2), this creates bias in all end-to-end CCAs,
+shifting the rate allocation away from max-min fairness [2, 26,
+34] (equal rates for all flows). For instance, Copa/Vegas/FAST
+achieve proportional fairness [26, 36], where flows using more
+bottleneck resources receive proportionally less bandwidth.
+While FRCC would achieve proportional fairness with just
+the contract bias, the bias in FRCC’s capacity estimate results
+in throughput ratios larger than proportional fairness.
+Similar to the different RTprop case, we compute this bias
+and FRCC’s fixed-point (Appendix D). Fig. 18 shows the
+resulting throughput ratios, with FRCC’s throughput ratio
+falling between hops and hops2 depending on the probe size.
+7
+Empirical evaluation
+We evaluate FRCC with four goals in mind: (1) illustrate the
+performance properties of FRCC, while (2) validating our
+proofs, (3) measure performance relative to existing CCAs,
+and (4) explore when FRCC breaks.
+Implementation & Methodology. We implement FRCC in
+the Linux kernel as a pluggable kernel module. We set FRCC’s
+design parameters as guided by our jittery link proof (§ 6.3),
+we set: γ = 4, α = 1, δH = 1.3, δL = 1.25, D = θ = 10 ms,
+TR =30 seconds, and TP = 1RTT. Our whole goal was to scale
+to arbitrarily large link capacities. Our proof shows that these
+parameter choices work for all link capacities and RTprops,
+as long as the buffers are large enough (§ 2, § 6.3). Note, even
+though we set D =θ=10 ms, this is for worst-case jitter, our
+design handles much more than 10 ms of jitter in experiments.
+We compare against Cubic [16], Reno [18], BBRv1 [7]
+(Linux kernel v5.15.0), BBRv3 [13], and Copa [5, 33]. We use
+mahimahi [28] and mininet [9] to emulate and test a variety
+of network scenarios. We perform various network parameter
+sweeps. By default, we use a dumbbell topology withC=48
+Mbps, R = 50 ms, NG = 3 flows, and buffer size = ∞(we set
+buffer =3BDP for Reno/Cubic, otherwise they set cwnd =∞).
+We use tcpdump at the senders to measure the throughput
+and RTT. We study the link utilization, flow throughput,
+fairness (Jain’s fairness index (JFI) [19], and throughput ratio
+
+maxi,j
+throughputi
+throughputj
+
+), RTTs (latency), and convergence time.
+We run experiments for 5 mins, and measure these metrics in
+steady-state (i.e., minute 3 onward).
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2765
+
+
+--- [Page 13] ---
+
+2
+4
+6
+8
+Flow count
+0.6
+0.8
+1.0
+JFI
+FRCC
+Copa
+BBRv1
+BBRv3
+Cubic
+Reno
+2
+4
+6
+8
+Flow count
+50
+100
+150
+RTT (ms)
+25
+50
+75
+100
+Link capacity (Mbps)
+0.6
+0.8
+1.0
+JFI
+25
+50
+75
+100
+Link capacity (Mbps)
+50
+100
+150
+RTT (ms)
+50
+100
+150
+200
+RTprop (ms)
+0.6
+0.8
+1.0
+JFI
+100
+200
+RTprop (ms)
+0
+200
+400
+600
+RTT (ms)
+Figure 19: Parameter sweeps with ideal link. We omit RTT for
+Cubic, it bloats buffers building very high delays and skews the plot.
+Parameter sweeps without jitter. We sweep flow count (1
+to 8 flows), link capacity (12 to 96 Mbps), and RTprop (10
+to 200 ms). This is a wide sweep that is at the limits of what
+mahimahi emulation can support. Fig. 19 shows that across all
+sweeps—flow count, capacity, and RTprop—all CCAs achieve
+fairness (JFI ≈1), except Copa, which struggles at high
+RTprops. All flows maintain non-zero queueing in steady-state
+yielding a link utilization of roughly 100% (not shown).
+The RTT plots agree with the expected RTTs of the CCAs.
+With increasing flow count, FRCC’s RTT increases linearly
+by θ = 10 ms per flow (RTT = R + θNG). BBR’s RTT
+also increases linearly.
+It operates in cwnd-limited mode
+(when NG > 1) and maintains αBBR packets (not seconds)
+per flow (cwndi = 2bCi bRi +αBBR, RTT = 2R +NGαBBR/C [3]).
+Copa’s RTT also increases linearly maintaining 1/δCopa
+packets of queueing per flow (RTT = R+NG/(δCopaC) [3, 5]).
+Reno/Cubic fill up buffers and have an RTT of 4R independent
+of the flow count (RTT =R+buffer/C, buffer=3BDP)
+Looking at the capacity sweep, FRCC’s RTT remains
+constant regardless of link capacity. Similarly, Cubic and
+Reno maintain constant RTT of 4R. In contrast, BBR’s RTT
+decreases with increasing capacity as the seconds of queueing
+(transmission delay) of its αBBR packets in queue diminishes.
+Copa follows the same pattern, with its RTT decreasing as
+capacity increases. This vanishing queueing delay (or delay
+variation) with increasing link capacity is precisely what
+leads to starvation under jitter. FRCC avoids this pitfall by
+maintaining delay and delay variation that remain larger than
+network jitter regardless of link capacity.
+Finally, the RTT vs RTprop plot is also consistent with
+the expected RTTs. The slope of RTT vs RTprop is 4 for
+Reno/Cubic, 2 for BBR, and 1 for FRCC and Copa.
+FRCC
+Copa
+BBRv1
+BBRv3
+Cubic
+Reno
+25
+50
+75
+100
+Link capacity (Mbps)
+100
+101
+Tput ratio
+0
+20
+40
+60
+RTprop ratio
+100
+101
+102
+Tput ratio
+RTprop ratio
+Figure 20: Jitter (different RTprops). [Left] Three flows with
+RTprop of 10, 20, and 30 ms, with varying link capacity. [Right]
+Two flows with varying RTprop ratio. FRCC’s throughput ratio is
+between 1 and RTprop ratio even when RTprops are off by 60×.
+25
+50
+75
+100
+Link capacity (Mbps)
+100
+101
+Tput ratio
+50
+100
+Jitter (ms)
+100
+101
+Tput ratio
+Figure 21: Jitter (ACK aggregation). Three flows with R =32 ms.
+Flow f0’s path has 32 ms of ACK aggregation. [Left] Varying link ca-
+pacity. [Right]VaryingamountofACKaggregation on flow f0’spath.
+The absolute RTTs (and RTT ranking across CCAs) varies
+depending on the design parameters, flow count, link capacity
+(transmission delay), RTprop, and buffer size. Trends in RTTs
+matter more than the absolute values.
+Sweeps with jitter. We study two manifestations of jitter: (1)
+different RTprops and (2) ACK aggregation. These are settings
+where FRCC shines. Fig. 20 [Left] shows flows with slightly
+different RTprops (10, 20, and 30 ms), FRCC/Cubic/Reno
+yield close to equal throughputs (ratio ≈1). BBR causes
+unfairness which increases with link capacity and ends up
+starving the shorter RTprop flow (e.g., Fig. 1). Copa also
+causes increasing unfairness with increasing link capacity.
+To emulate ACK aggregation, we implement an aggregator
+parameterized with a burst size in milliseconds and a burst rate.
+The aggregator collects all ACKs in the burst size period and
+sends them at the burst rate. We set the burst rate to ensure that
+the aggregator does not become the bottleneck. We sweep the
+link capacity in Fig. 21 [Left] and burst size in Fig. 21 [Right].
+Copa and Cubic/Reno cause unfairness which increases
+with link capacity, eventually starving flows. Copa starves the
+flow with aggregation while Reno/Cubic starve the other flows
+(Fig. 2). FRCC maintains roughly equal throughputs for flows
+even when the jitter is 128 ms—10× what FRCC was tuned
+to tolerate. BBR exhibits slight unfairness.
+Vastly different RTprops and multiple bottlenecks. Fig. 20
+[Right] shows throughput ratios of two flows with varying RT-
+propratio. The throughputratios forallCCAs increase withRT-
+prop ratio. FRCC’s throughput ratio is lower (more fair) than
+other CCAs even when the RTprops are off by 64×. FRCC’s
+throughput ratio lies between 1 and RTT ratio and is consistent
+with our analysis (§ 6.5). Note, RTprop ratio > RTT ratio.
+Fig. 22 shows results with the parking lot topology withC=
+2766    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 14] ---
+
+FRCC
+Copa
+BBRv1
+BBRv3
+Cubic
+Reno
+1
+2
+3
+4
+5
+6
+7
+8
+Hops
+100
+101
+102
+Throughput ratio
+hops
+hops2
+Figure 22: Parking lot topology. FRCC’s empirical throughput
+ratio is between hops and hops2. We do not show BBRv3 as we have
+separate VMs for BBRv3 and mininet (for emulating parking lot).
+0
+200
+400
+600
+800
+1000
+1200
+1400
+Time (s)
+0
+20
+40
+60
+80
+Throughput (Mbps)
+Figure 23: FRCC converges to fair rates as flows enter and leave.
+Each line shows the throughput of a different flow.
+100 Mbps and RTprop =10 ms for all flows. FRCC’s through-
+put ratio lies between hops and hops2, consistent with our anal-
+ysis (§ 6.5). The throughput ratio for Copa is ≈hops (propor-
+tional fairness), while that for BBR/Cubic is worse than hops2.
+Convergence time. Fig. 23 shows 8 flows competing on a 96
+Mbps link with 50 ms RTprop. Each flow enters 90 seconds
+after the previous one and runs for 8 × 90 = 720 seconds.
+Practically, FRCC’s convergence time is slow and takes tens
+of seconds to converge. FRCC takes O(log(BDP)) rounds to
+converge. When there are four flows, a slot is 4 RTTs or 360
+ms (RTT = R +θNG = 50+4∗10), and a round is kNG = 8
+slots or 3 seconds. C.f. a round for BBR is 8∗R = 0.4 seconds.
+8
+Discussion
+Summary. We presented FRCC, the first CCA that provably
+achieves fairness despite network jitter, using our key insight
+of of decoupling fair rate coordination. Our formal analysis
+demonstrates that FRCC converges exponentially fast to ef-
+ficient and fair rate allocations with bounded throughput ratios
+even under worst-case jitter patterns. Our empirical evaluation
+validates these theoretical guarantees, showing that FRCC
+maintains fairness in scenarios where existing CCAs starve.
+Limitations and future work. While FRCC represents
+significant progress, three key limitations may need to be
+addressed for a practical deployment: (L1) operation with
+shallow buffers, (L2) coexistence with other CCAs, and (L3)
+convergence time. Of these, we believe the convergence time
+is the most critical. For instance, even widely deployed CCAs
+like Reno, Cubic, and BBR struggle with shallow buffers [8]
+and coexisting with each other [35].
+We outline three promising directions for addressing these
+limitations. First, to handle shallow buffers, a contract based
+on packet loss [12, 25] rather than delay could be explored.
+However, directly adopting Reno’s loss-rate encoding is insuf-
+ficient, as its sawtooth behavior causes under-utilization when
+buffers are smaller than the BDP. Second, our current contract
+encodes information in the magnitude of delay. Future work
+could explore encoding the fair rate in the frequency or pattern
+of delay variations. A prior proposal for AIMD on delay [3] fol-
+lows this direction, but we found this specific design can lead
+to starvation on multi-bottleneck paths even without jitter [2].
+Third, while FRCC’s asymptotic convergence time of
+log(NGBDP) RTTs is competitive, its practical convergence is
+longer due to (1) a long, multi-RTT probing slot, and (2) O
+(NG) slots in a round. Further research on capacity estimation
+could reduce the probing duration. Alternatively, an initial
+deployment could trade theoretical robustness in favor of con-
+vergence time. For instance, the long probing slot helps deal
+with transient RTT variations with different RTprops and multi-
+ple bottlenecks (Figures 9, 10, and 11). A shorter slot duration
+and fewer slots per round would help improve convergence
+at the cost of modest unfairness in those specific cases, while
+still solving the core starvation problem in Figures 1 and 2.
+Takeaways. Our work may influence the CCA landscape
+in at least four ways. First, FRCC could be deployed with a
+pragmatic tuning (as described above) or after further research
+addresses its limitations. Second, parts ofFRCC (e.g., linkfrac-
+tion coordination, link capacity estimation, transient/persistent
+RTT variations) may inform other CCA designs. Third, further
+research may conclude that fairness is a much harder problem
+where end-to-end methods like FRCC come at an unbearable
+cost, bolstering the case for deployment of in-network
+solutions or informed over-provisioning of the Internet.
+Finally, our design would not have been possible without
+formal reasoning and worst-case modeling of the network.
+We began by stating assumptions about the network and
+desired performance guarantees, then worked backwards to
+derive a CCA that meets these requirements. This (1) revealed
+high-level key insights and (2) guided our low-level design
+decisions. We believe this is a promising methodology in
+general for developing robust network control algorithms with
+predictable performance in challenging environments.
+Acknowledgments
+We are grateful to the anonymous reviewers and our shepherd,
+Srikanth Sundaresan, for their comments that helped improve
+our paper. This work was supported in part by NSF grants
+CNS-2403026, CNS-2212102, CNS-2212390, CNS-2403026,
+and CCF-2422130.
+In memory of Prateesh Goyal
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2767
+
+
+--- [Page 15] ---
+
+References
+[1]
+Anup Agarwal, Venkat Arun, Devdeep Ray, Ruben
+Martins, and Srinivasan Seshan. “Towards provably per-
+formant congestion control”. In: 21st USENIX Sympo-
+sium on NetworkedSystemsDesign andImplementation
+(NSDI 24). Santa Clara, CA: USENIX Association, Apr.
+2024, pp. 951–978. URL: https://www.usenix.org/
+conference/nsdi24/presentation/agarwal-anup.
+[2]
+Anup Agarwal, Venkat Arun, and Srinivasan Seshan.
+Contracts: A unified lens on congestion control robust-
+ness, fairness, congestion, and generality. 2025. arXiv:
+2504.18786 [cs.NI]. URL: https://arxiv.org/abs/
+2504.18786.
+[3]
+VenkatArun, MohammadAlizadeh, andHariBalakrish-
+nan. “Starvation in End-to-End Congestion Control”.
+In: Proceedings of the 2022 ACM SIGCOMM 2022
+Conference. SIGCOMM ’22. Amsterdam, Netherlands:
+Association for Computing Machinery, 2022.
+[4]
+Venkat Arun, Mina Tahmasbi Arashloo, Ahmed Saeed,
+Mohammad Alizadeh, and Hari Balakrishnan. “Toward
+Formally Verifying Congestion Control Behavior”. In:
+Proceedings of the 2021 ACM SIGCOMM 2021 Con-
+ference. SIGCOMM ’21. Virtual Event, USA: Associa-
+tion for Computing Machinery, 2021, pp. 1–16. URL:
+https://doi.org/10.1145/3452296.3472912.
+[5]
+Venkat Arun and Hari Balakrishnan. “Copa: Practi-
+cal Delay-Based Congestion Control for the Internet”.
+In: 15th USENIX Symposium on Networked Systems
+Design and Implementation (NSDI 18). Renton, WA:
+USENIX Association, Apr. 2018, pp. 329–342. URL:
+https : / / www . usenix . org / conference / nsdi18 /
+presentation/arun.
+[6]
+L.S. Brakmo and L.L. Peterson. “TCP Vegas: end to
+end congestion avoidance on a global Internet”. In:
+IEEE Journal on Selected Areas in Communications
+13.8 (1995), pp. 1465–1480.
+[7]
+Neal Cardwell, Yuchung Cheng, C. Stephen Gunn,
+Soheil Hassas Yeganeh, and Van Jacobson. “BBR:
+Congestion-Based Congestion Control”.
+In: ACM
+Queue 14, September-October (2016), pp. 20–53. URL:
+http://queue.acm.org/detail.cfm?id=3022184.
+[8]
+Neal Cardwell, Ian Swett, and Joseph Beshay. BBR
+Congestion Control. Internet-Draft draft-ietf-ccwg-bbr-
+01. Work in Progress. Internet Engineering Task Force,
+Oct. 2024. 79 pp. URL: https://datatracker.ietf.
+org/doc/draft-ietf-ccwg-bbr/01/.
+[9]
+Mininet Project Contributors. Mininet: An Instant Vir-
+tual Network on Your Laptop (or Other PC) - Mininet.
+[Online; accessed 2025-04-17].
+URL:
+https : / /
+mininet.org/.
+[10]
+Mo Dong, Qingxi Li, Doron Zarchy, P Brighten God-
+frey, and Michael Schapira. “PCC: Re-architecting
+congestion control for consistent high performance”.
+In: 12th USENIX Symposium on Networked Systems
+Design and Implementation (NSDI 15). 2015, pp. 395–
+408.
+[11]
+Constantinos Dovrolis, Parameswaran Ramanathan,
+and David Moore.
+“What do packet dispersion
+techniques measure?” In: Proceedings IEEE INFO-
+COM 2001. Conference on Computer Communica-
+tions. Twentieth Annual Joint Conference of the IEEE
+Computer and Communications Society (Cat.
+No.
+01CH37213). Vol. 2. IEEE. 2001, pp. 905–914.
+[12]
+Sally Floyd, Mark Handley, Jitendra Padhye, and J¨
+org Widmer. “Equation-based congestion control for
+unicast applications”. In: Proceedings of the Confer-
+ence on Applications, Technologies, Architectures, and
+Protocols for Computer Communication. SIGCOMM
+’00. Stockholm, Sweden: Association for Computing
+Machinery, 2000, pp. 43–56. URL: https://doi.org/
+10.1145/347059.347397.
+[13]
+google/bbr at v3. [Online; accessed 2025-04-17]. URL:
+https://github.com/google/bbr/tree/v3.
+[14]
+Prateesh Goyal, Anup Agarwal, Ravi Netravali, Mo-
+hammad Alizadeh, and Hari Balakrishnan. “ABC: A
+Simple Explicit Congestion Controller for Wireless Net-
+works”. In: 17th USENIX Symposium on Networked
+Systems Design and Implementation (NSDI 20). Santa
+Clara, CA: USENIX Association, Feb. 2020, pp. 353–
+372. URL: https://www.usenix.org/conference/
+nsdi20/presentation/goyal.
+[15]
+Prateesh Goyal, Akshay Narayan, Frank Cangialosi,
+Srinivas Narayana, Mohammad Alizadeh, and Hari
+Balakrishnan. “Elasticity detection: a building block
+for internet congestion control”. In: Proceedings of
+the ACM SIGCOMM 2022 Conference. SIGCOMM
+’22. Amsterdam, Netherlands: Association for Com-
+puting Machinery, 2022, pp. 158–176. URL: https:
+//doi.org/10.1145/3544216.3544221.
+[16]
+Sangtae Ha, Injong Rhee, and Lisong Xu. “CUBIC:
+A New TCP-Friendly High-Speed TCP Variant”. In:
+SIGOPS Oper. Syst. Rev. 42.5 (July 2008), pp. 64–74.
+URL: https://doi.org/10.1145/1400097.1400105.
+[17]
+Feixue Han, Qing Li, Peng Zhang, Gareth Tyson, Yong
+Jiang, Mingwei Xu, Yulong Lan, and ZhiCheng Li.
+“ETC: An Elastic Transmission Control Using End-
+to-End Available Bandwidth Perception”. In: 2024
+USENIX Annual Technical Conference (USENIX ATC
+24). Santa Clara, CA: USENIX Association, July
+2024, pp. 265–284. URL: https://www.usenix.org/
+conference/atc24/presentation/han.
+2768    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 16] ---
+
+[18]
+Janey C. Hoe. “Improving the Start-up Behavior of a
+Congestion Control Scheme for TCP”. In: Conference
+Proceedings on Applications, Technologies, Architec-
+tures, and Protocols for Computer Communications.
+SIGCOMM ’96. Palo Alto, California, USA: Asso-
+ciation for Computing Machinery, 1996, pp. 270–280.
+URL: https://doi.org/10.1145/248156.248180.
+[19]
+Rajendra K Jain, Dah-Ming W Chiu, William R Hawe,
+et al. “A quantitative measure of fairness and discrim-
+ination”. In: Eastern Research Laboratory, Digital
+Equipment Corporation, Hudson, MA 21.1 (1984).
+[20]
+Dina Katabi, Mark Handley, and Charlie Rohrs. “Con-
+gestion Control forHigh Bandwidth-Delay Product Net-
+works”. In: SIGCOMM Comput. Commun. Rev. 32.4
+(Aug. 2002), pp. 89–102. URL: https://doi.org/10.
+1145/964725.633035.
+[21]
+Gautam Kumar, Nandita Dukkipati, Keon Jang, Hassan
+M. G. Wassel, Xian Wu, Behnam Montazeri, Yaogong
+Wang, Kevin Springborn, Christopher Alfeld, Michael
+Ryan, David Wetherall, and Amin Vahdat. “Swift: De-
+lay is Simple and Effective for Congestion Control in
+the Datacenter”. In: Proceedings of the Annual Con-
+ference of the ACM Special Interest Group on Data
+Communication on the Applications, Technologies, Ar-
+chitectures, and Protocols for Computer Communica-
+tion. SIGCOMM ’20. Virtual Event, USA: Association
+for Computing Machinery, 2020, pp. 514–528. URL:
+https://doi.org/10.1145/3387514.3406591.
+[22]
+K.Lai andM.Baker. “Measuringbandwidth”. In: IEEE
+INFOCOM ’99. Conference on Computer Communi-
+cations. Proceedings. Eighteenth Annual Joint Con-
+ference of the IEEE Computer and Communications
+Societies. The Future is Now (Cat. No.99CH36320).
+Vol. 1. 1999, 235–245 vol.1.
+[23]
+Kevin Lai and Mary Baker. “Measuring link band-
+widths using a deterministic model of packet delay”. In:
+Proceedings of the Conference on Applications, Tech-
+nologies, Architectures, and Protocols for Computer
+Communication. SIGCOMM ’00. Stockholm, Sweden:
+Association for Computing Machinery, 2000, pp. 283–
+294.
+URL: https : / / doi . org / 10 . 1145 / 347059 .
+347557.
+[24]
+Steven H. Low, Larry L. Peterson, and Limin Wang.
+“Understanding TCP Vegas: a duality model”. In: J.
+ACM 49.2 (Mar. 2002), pp. 207–235. URL: https:
+//doi.org/10.1145/506147.506152.
+[25]
+Matthew Mathis, Jeffrey Semke, Jamshid Mahdavi, and
+Teunis Ott. “The Macroscopic Behavior of the TCP
+Congestion Avoidance Algorithm”. In: SIGCOMM
+Comput. Commun. Rev. 27.3 (July 1997), pp. 67–82.
+URL: https://doi.org/10.1145/263932.264023.
+[26]
+J. Mo and J. Walrand. “Fair end-to-end window-based
+congestion control”. In: IEEE/ACM Transactions on
+Networking 8.5 (2000), pp. 556–567.
+[27]
+Leonardo de Moura and Nikolaj Bjørner. “Z3: An
+Efficient SMT Solver”. In: Tools and Algorithms for
+the Construction and Analysis of Systems. Ed. by C. R.
+Ramakrishnan and Jakob Rehof. Berlin, Heidelberg:
+Springer Berlin Heidelberg, 2008, pp. 337–340.
+[28]
+Ravi Netravali, Anirudh Sivaraman, Somak Das,
+Ameesh Goyal, Keith Winstein, James Mickens, and
+Hari Balakrishnan. “Mahimahi: Accurate Record-and-
+Replay for HTTP”. In: 2015 USENIX Annual Tech-
+nical Conference (USENIX ATC 15).
+Santa Clara,
+CA: USENIX Association, July 2015, pp. 417–429.
+URL: https://www.usenix.org/conference/atc15/
+technical-session/presentation/netravali.
+[29]
+Adithya
+Abraham
+Philip,
+Rukshani
+Athapathu,
+Ranysha Ware, Fabian Francis Mkocheko, Alexis
+Schlomer, Mengrou Shou, Zili Meng, Srinivasan Se-
+shan, and Justine Sherry. “Prudentia: Findings of an
+Internet Fairness Watchdog”. In: Proceedings of the
+ACM SIGCOMM 2024 Conference. ACM SIGCOMM
+’24. Sydney, NSW, Australia: Association for Com-
+puting Machinery, 2024, pp. 506–520. URL: https:
+//doi.org/10.1145/3651890.3672229.
+[30]
+Adithya Abraham Philip, Ranysha Ware, Rukshani
+Athapathu, Justine Sherry, and Vyas Sekar. “Revis-
+iting TCP Congestion Control Throughput Models &
+Fairness Properties at Scale”. In: Proceedings of the
+21st ACM Internet Measurement Conference. IMC ’21.
+Virtual Event: Association for Computing Machinery,
+2021, pp. 96–103. URL: https://doi.org/10.1145/
+3487552.3487834.
+[31]
+Rayadurgam Srikant and Tamer Ba¸sar. The mathemat-
+ics of Internet congestion control. Springer, 2004.
+[32]
+SymPy. [Online; accessed 2025-04-25]. URL: https:
+//www.sympy.org/en/index.html.
+[33]
+venkatarun95/genericCC. [Online; accessed 2025-04-
+17].
+URL: https : / / github . com / venkatarun95 /
+genericCC.
+[34]
+Weitao Wang, Masoud Moshref, Yuliang Li, Gautam
+Kumar, T. S. Eugene Ng, Neal Cardwell, and Nandita
+Dukkipati. “Poseidon: Efficient, Robust, and Practical
+Datacenter CC via Deployable INT”. In: 20th USENIX
+Symposium on Networked Systems Design and Imple-
+mentation (NSDI 23). Boston, MA: USENIX Associa-
+tion, Apr. 2023, pp. 255–274. URL: https://www.
+usenix . org / conference / nsdi23 / presentation /
+wang-weitao.
+[35]
+Ranysha Ware, Matthew K. Mukerjee, Srinivasan Se-
+shan, and Justine Sherry. “Modeling BBR’s Interac-
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2769
+
+
+--- [Page 17] ---
+
+tions with Loss-Based Congestion Control”. In: Pro-
+ceedings of the Internet Measurement Conference. IMC
+’19. Amsterdam, Netherlands: Association for Com-
+puting Machinery, 2019, pp. 137–143. URL: https:
+//doi.org/10.1145/3355369.3355604.
+[36]
+David X. Wei, Cheng Jin, Steven H. Low, and Sanjay
+Hegde. “FAST TCP: Motivation, Architecture, Algo-
+rithms, Performance”. In: IEEE/ACM Transactions on
+Networking 14.6 (2006), pp. 1246–1259.
+[37]
+Keith Winstein and Hari Balakrishnan.
+“TCP Ex
+Machina: Computer-Generated Congestion Control”.
+In: Proceedings of the ACM SIGCOMM 2013 Confer-
+ence on SIGCOMM. SIGCOMM ’13. Hong Kong,
+China: Association for Computing Machinery, 2013,
+pp. 123–134.
+URL: https : / / doi . org / 10 . 1145 /
+2486001.2486020.
+A
+Artifact Appendix
+Abstract. We release (1) FRCC’s Linux kernel module
+implementation, (2) code for theoretical analysis and proofs,
+and (3) scripts to run and plot empirical experiments.
+Scope. We hope our artifact allows others to verify our the-
+oretical and empirical claims as well as build upon our work.
+For the theoretical analysis and proofs, we include code to
+reproduce Figures 14, 15, 18 and Theorems 6.1, 6.2.
+For the empirical experiments, we include code to reproduce
+Figures 1, 2, 19, 20, 21, 23. We do not include code to
+reproduce experiments with BBRv3 and the parking lot
+topology (i.e., Figure 22) as we have separate VMs for these
+experiments.
+Contents. Our artifact is organized across three repositories:
+(1) https://github.com/108anup/frcc/tree/main. This is
+the main repository that includes the other two repositories
+as submodules. It contains documentation and the code
+for reproducing FRCC’s theoretical analysis and proofs.
+(2) https://github.com/108anup/frcc_kernel/tree/
+main.
+This contains FRCC’s Linux kernel module
+implementation.
+(3) https://github.com/108anup/cc_bench/tree/main.
+This contains the scripts for running and plotting empirical
+experiments.
+The
+main
+repository (https://github.com/108anup/
+frcc/tree/main) contains a detailed README.md documenting
+dependencies, setup, known issues, and commands for
+reproducing all the experiments.
+Hosting. At the time of submission, the main repository
+(https://github.com/108anup/frcc/tree/main)
+is
+at
+commit 4cedada281fb2d7df04f6dad476a30e44be6fd19 on
+the main branch.
+This commit includes the kernel and
+benchmarking repositories as submodules.
+Requirements. The artifact does not require specialized
+hardware. Since our artifact modifies the kernel through the
+kernel module, we recommend running experiments in a
+virtual machine or on a dedicated host. All evaluations in the
+paper were performed on an x86_64 server-class machine
+with 64 cores and 256 GB RAM, allowing multiple concurrent
+experiments. Users with fewer resources can scale down the
+degree of concurrency (see README.md for details).
+B
+Design details
+B.1
+FRCC Pseudocode
+For simplicity we do not show (1) RTprop probes (§ B.4), and
+(2) pacing the probe’s gain and drain over an RTT (instead the
+pseudocode just shows abrupt changes in cwnd) (§ 5.3), and
+(3) pacing rate.
+Algorithm 2: FRCC pseudocode.
+1 Function OnACK(Seq ack, RTT rtt)
+2
+updateEstimates(ack, rtt)
+3
+if probing & shouldInitProbeEnd() then ▷See § 5
+4
+cwnd ←prev_cwnd ▷Drain probe’s excess
+5
+end
+6
+if slotEnded(ack, rtt) then ▷See § 5
+7
+if probing then
+8
+probing←False
+9
+updateCwnd() ▷See Alg. 1
+10
+end
+11
+if shouldProbe() then ▷See § 5
+12
+startProbe()
+13
+end
+14
+startSlot() ▷Reset d
+sRTT (if not probing)
+15
+end
+16
+if roundEnded() then ▷kNmax slots elapsed
+17
+▷Reset d
+rRTT, \
+rtput
+18
+end
+19 end
+20 Function updateEstimates(Seq ack, RTT rtt)
+21
+bR ←min(bR,rtt)
+22
+d
+rRTT ←min( d
+rRTT,rtt)
+23
+if probing & partOfProbe(ack) then ▷See § 5
+24
+c
+∆d =min(c
+∆d,rtt−d
+sRTT)
+25
+else if not probing then
+26
+d
+sRTT ←min( d
+sRTT,rtt)
+27
+\
+rtput ←max(\
+rtput,cwnd/rtt)
+28
+end
+29 end
+30 Function startProbe()
+31
+probing←True
+32
+c
+∆d ←∞
+33
+prev_cwnd ←cwnd
+34
+c
+NT ←( d
+rRTT−bR)/θ
+35
+E ←max(γc
+NT\
+rtputD,1)
+36
+cwnd ←cwnd+E
+37 end
+2770    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 18] ---
+
+RTT aligned interval
+Tput1 = cwnd1/RTT1
+Tput1 = C
+Tput1 = 0
+Flow 2
+Flow 1
+C
+Y
+X
+Z
+Figure 24: Measuring \
+rtput over non-RTT-aligned intervals can
+yield a measurement of 0 orC. Measuring over RTT-aligned intervals
+better matches throughput.
+B.2
+Probe size derivation
+Under our probe size (E =γc
+NT\
+rtputD), we derive the impact
+of ∆R noise in c
+∆d on our bC estimate and consequently its
+impact on deciphering which of NC or c
+NT is bigger.
+We used this derivation in inverse (from bottom to top) to
+derive the probe size in the first place.
+bC = E
+c
+∆d
+=
+E
+∆d±∆R =
+CE
+E±C∆R
+We get the last equality by substituting ∆d =E/C. Substituting
+our probe size,
+bC =
+Cγc
+NT\
+rtputD
+γc
+NT\
+rtputD±C∆R
+Substituting bC into c
+NC computation,
+c
+NC =
+bC
+\
+rtput
+=
+Cγc
+NTD
+γc
+NT\
+rtputD±C∆R
+Substituting c
+NC in,
+c
+NT
+c
+NC
+= γc
+NT\
+rtputD±C∆R
+CγD
+=
+c
+NT\
+rtput
+C
+± ∆R
+γD
+SubstitutingC=NC·rtput (definition of NC (Appendix D)),
+c
+NT
+c
+NC
+= \
+rtput
+rtput
+c
+NT
+NC
+± ∆R
+γD
+Note, we define the “true” quantities ∆d, NC, rtput based
+on the fluid model and define ∆R as error in observations in
+jittery link relative to fluid model (§ 6.1, § C.1). This is why it
+is okay to use the substitutions ∆d =E/C andC=NC·rtput.
+B.3
+Measuring throughput over packet-timed
+RTTs
+We argue that for cwnd-based CCAs (1) \
+rtput should be mea-
+sured over intervals aligned with packet-timed RTTs (i.e., the
+interval starts with sending a packet and ends with receiving its
+ACK), and (2) that measuring over multiple aligned intervals
+(to get longer intervals) provides no additional benefit.
+As shown in Fig. 24, the throughput measured over non-
+RTT-aligned intervals can be anywhere between 0 andC (the
+link capacity). This occurs due to packet interleaving across
+flows and exists even on ideal links without jitter. Specifically,
+in interval X , only packets of flow 1 are served, resulting in
+throughput equal to C, while in interval Y , only packets of
+flow 2 are served, yielding zero throughput for flow 1.
+In contrast, in the RTT-aligned interval Z , the packets
+ACKed, between sending a packet and receiving its ACK,
+are exactly those that were in flight when the packet was sent,
+which equals the flow’s cwnd. This gives a throughput estimate
+of cwnd/RTT, where RTT is the round-trip time seen by the
+last ACK in the interval. While this RTT value may contain
+noise due to jitter, such noise can persist indefinitely under our
+network model, causing the same throughput measurement to
+repeat. Consequently, throughput measurements over multiple
+RTT-aligned intervals offer no improvement in the worst-case.
+Note, this does not contradict [1], which showed that longer
+measurement intervals yield better estimates, as this is true
+for rate-based control. Specifically, with rate-based control,
+packets transmitted (and ACKed) within an RTT may not
+equal cwnd (when the cwnd cap is not hit, or if there is no cwnd).
+Note, pacing may only partially address interleaving.
+Jitter before the bottleneck can still reorder packets across
+flows. Further, with cwnd-based control, pacing yields no
+improvement over RTT-aligned estimates anyway.
+B.4
+RTprop estimate
+We can only measure RTprop when queues are drained [7];
+however, FRCC maintains θNG seconds of delay in steady-
+state. To drain this queue, we launch RTprop probes every
+TR = 30 seconds, similar to BBR [7]. During these probes,
+FRCC reduces cwnd to 4 packets for one “max RTT”, a conser-
+vative upper bound on the RTT of competing flows. This en-
+sures that the probe lasts long enough for all flows, with poten-
+tially different RTprops, to simultaneously observe the drain.
+We set max RTT to “Rmax+ max slot delay”, where max
+slot delay is the maximum of RTT−bR samples in the latest
+slot. We use Rmax = 100 ms. This is similar to BBR’s RTT
+probe duration of (hard-coded) 200 ms [7].
+Note, this only works if the RTprop probes occur together.
+We assume that senders’ clocks are synchronized and launch
+the probe every 30th second on the clock. This keeps our
+implementation simple. Today, NTP (network time protocol)
+makes it relatively easy to get clock synchronization with <
+10 millisecond-level accuracy. Note, this accuracy depends
+on RTprop between NTP servers and senders, and not on the
+RTprop between senders or between senders and receivers.
+Note that we could instead use BBR’s mechanism of
+launching RTT probes when the bR expires (i.e., 10 seconds
+elapsed since bR last changed) to implicitly synchronize the
+RTT probes. In our empirical evaluation, BBR’s RTT probe
+always synchronize regardless of injected jitter, though we
+do not have a formal proof for this.
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2771
+
+
+--- [Page 19] ---
+
+B.5
+Probability of probe collisions
+If there are kN slots and N flows probing. The probability of
+a particular flow not colliding is:
+kN−1
+kN
+N−1
+→e−1/k as N →∞
+Hence, the probability of a particular flow colliding is bounded
+by 1−e−1/k.
+C
+Proof details
+C.1
+Preliminaries
+Fluid reference execution. Say flow fi has congestion
+window cwndi, round-trip propagation delay Ri. We look at
+the execution of these choices on a fluid model of the network
+with link capacityC and infinite buffer.
+Under this execution, below we define “reference” state
+variables: (1) “current flow count” (from the point of view flow
+i) (NCi), and (2) “target flow count” (NT). Recall, the current
+flow count is inverse of the fraction of link the flow consumes,
+and target flow count is based on the contract’s target delay
+function, i.e., NT =ContractFunc(delay)=delay/θ.
+NT solves∑
+i
+cwndi
+rRTTi
+=∑
+i
+cwndi
+NTθ+Ri
+=C
+(C.1)
+NCi = ∑jrtputj
+rtputi
+=
+C
+rtputi
+, with, rtputj =
+cwndj
+rRTTj
+(C.2)
+For Ri = R, NT = ∑icwndi−CR
+Cθ
+(C.3)
+We also define “rRTTi” (= NTθ + Ri) and “rtputi” (=
+cwndi/rRTTi) as the “reference” RTT and throughput values.
+Summary of notation. We track four variables:
+rRTTi,
+rtputi, NCi, NT (Table 2).
+For each of these variables there are: (1) values in the ref-
+erence execution, and (2) estimates maintained by the FRCC.
+Further, all these quantities change as rounds progress. We
+use the following notation to differentiate between these uses.
+• Symbols without any annotation or with [r] suffix (e.g.,
+rRTTi or rRTTi[r]) denote the state variables in round r
+of the reference execution. We also use symbols without
+[r] suffix to refer to state after a probe (in addition to at
+boundaries of rounds).
+• Symbols with hats (e.g., [
+rRTTi[r]) denote the estimates or
+state variables maintained by FRCC.
+• As a shorthand we drop the [r] suffix when clear from
+context, e.g., we use c
+NCi[rF]= c
+NCi[r+1] and c
+NCi to denote
+state in the next round and current round respectively.
+C.2
+Assumptions
+Since our analyses are at the level of rounds, we make several
+assumptions about the slot-level behavior.
+“The purpose of abstraction is not to be vague, but
+to create a new semantic level in which one can be
+absolutely precise.” — Edsger Dijkstra
+Assumption 1. RTprop probe works. We assume that
+our RTprop probing mechanism works; i.e., flows can
+simultaneously drain queues and get an RTT measurement
+without queueing delays. This may still have errors due to
+(E1/E2). Note, there is no error due to capacity probes (E3)
+because FRCC stops any ongoing capacity probes when its
+time for an RTprop probe.
+Assumption 2. Slots align. Slots of flows are the same
+duration. This is true for ideal link with equal RTprops (§ C.3).
+On jittery link, slot durations may differ due to differences in
+the RTTs of the flows. Further, with different propagation de-
+lays also slot durations differ. Despite this our analyses yields
+interesting and empirically valid insights (§ 6.3, § 6.5, § 7).
+Assumption 3. Rounds align. Between two cwnd updates
+of a flow, all other flows have a cwnd update. For the purpose of
+analysis, we define rounds at the boundaries of such intervals
+where each flow probes and updates cwnd exactly once. In
+reality, a flow may probe twice between the probes of another
+flow, e.g., a flow may probe at the end of one round and at
+the start of the next round, without other flows updating their
+cwnds in between. Note, when slot durations are the same,
+there can be at most two cwnd updates of a flow between other
+flow’s cwnd updates, as a full round needs to elapse between
+the first and third cwnd update of a flow, during which all other
+flows will probe at least once.
+Assumption 4. Synchronous updates. (We relax this
+for § 6.4) All cwnd updates occur synchronously. I.e., in a
+round, all flows first update their estimates and then use these
+to update their cwnd. In reality, the cwnd updates may happen
+sequentially, i.e., one flow probes and updates their cwnd,
+resulting a new reference state, then another flow estimates
+the new state, and then updates its cwnd.
+Assumption 5. At least one non-colliding cruise before
+probe. Before every capacity probe, there is at least one cruise
+measurement that does not collide with a probe of some other
+flow. This ensures we get an estimate of [
+rRTTi and \
+rtputi
+that is not biased by the probe of other flows (i.e., no impact
+of (E3)). Note, our design ensures that there is at least one
+cruise slot before a probe. Further, over a round there will
+be many cruise slots that do not collide with probe (from the
+pigeon-hole principle, there are kNG in steady-state and only
+NG flows or probe slots). But all the measurements in the
+cruise slot before a flow’s probe may collide with other probes,
+we assume that this does not happen.
+Assumption 6. Use alternate cwnd update. Only for
+Theorem 6.2, we use the alternate update (line 6) instead of
+the main update (line 7).
+Assumption 7. Known RTprop and one-sided error in
+RTT, throughput. Only for Theorem 6.2, we assume that
+there is no error due to (E1/E2) in RTprop, i.e., ∀i, bRi = Ri.
+We also assume that the error due to (E1/E2) in RTT and
+throughput measurements is one-sided, i.e., RTTs only
+increase due to noise and throughputs only decrease. This does
+not hold in reality. Fig. 11 shows that RTTs oscillate and thus
+2772    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 20] ---
+
+can be both more or less than the fluid reference. Likewise, if
+one flow’s throughput drops because of RTT inflation then the
+other flows’ throughput increases with a closed-loop system.
+We believe these assumptions are not needed for Theo-
+rem 6.2. We made them historically and hope to remove them.
+We designed our estimates so that errors vanish with increasing
+delay and delay variations, and the polarity of the errors has
+little consequence. For instance, for the capacity estimate, the
+excess delay is a difference of two potentially erroneous RTT
+measurements, and we model both positive and negative errors
+in excess delay. Removing this assumption may change the
+guidance on design parameter choices. However, empirically,
+the current design parameters work fine (§ 7).
+C.3
+Ideal link
+C.3.1
+Bounds on estimates
+LEMMA C.1. For an ideal link, with equal propagation
+delays, when the link is utilized, and there are no cwnd changes,
+there are no RTT variations due to (E2), i.e., effects of packet
+interleaving or differences in feedback delay.
+Proof. When the link is utilized, every 1/C seconds (i.e., a
+transmission delay), a packet is dequeued by the bottleneck
+link, due to the ACK-clock, this dequeue triggers an enqueue
+exactly R seconds later (as all Ri =R). As a result every 1/C
+seconds a packet is enqueued and dequeued, and there is no
+variation in queuing delay or RTT. Note, this is not true when
+RTprops are different, which is why we see the oscillations
+in Fig. 10.
+It suffices for us to look at the execution when the link is
+already utilized, as FRCC ensures that the bottleneck link is
+utilized exponentially fast. This is because there is at least
+one flow in the network, and FRCC increases cwnd until, the
+minimum RTT is 1∗θ more than R. As a result, there is always
+a queuing delay, and link is utilized. So we can use Lemma C.1
+in deriving the state transition function. This derivation then
+works for states that start with a utilized link.
+Due to Lemma C.1, since all RTTs are the same, they are
+equal to rRTTi, and so our RTT estimates are correct: [
+rRTTi =
+rRTTi, c
+∆di = ∆di, and bRi = Ri = R (equal RTprops, and draining
+occurs synchronously (Assumption 1.)).
+Further, since we measure throughput over packet-timed
+RTT the \
+rtput is cwnd/RTT which is same as the rtput
+=cwnd/rRTT on the fluid reference (as all RTTs are equal to
+rRTT due to Lemma C.1).
+Note, we used the fact that updates are synchronous in
+computing these bounds, i.e., the estimates are not impacted
+by other flows’ cwnd updates within the round Assumption
+4. (and consequently Assumption 3. and Assumption 2.).
+We also assumed that probes do not collide and that there is a
+cruise slot before the probe that did not collide with any probe
+(Assumption 5.).
+As a result, c
+NTi =NT, bCi =C, c
+NCi =NCi, i.e., there is no error
+in estimation compared to reference execution.
+C.3.2
+Next state, and state transition function
+Now, we derive how the state variables evolve over rounds.
+We re-write the cwnd update equations (§ 5.2) given that the
+estimates are the same as the reference state, and then consider
+the reference state after all flows have updated their cwnd.
+Note, in reality, flows may update their cwnd one by one (but
+we assume updates are synchronous Assumption 4.).
+Reference state after a round is (Eq. C.3):
+NT[rF]= ∑icwndi[rF]−CR
+Cθ
+(C.4)
+NCi[rF]= ∑icwndi[rF]−CR
+Cθ
+(C.5)
+Substituting next cwnds, (i.e., cwndi[rF] = (1−α)·cwndi[r]+
+α·target_cwndi, where target_cwndi = cwndi·NCi/NT), i.e.,
+the alternate cwnd update (line 6) and simplifying:
+NCi[rF]= NCi((1−α)NT+αNG)
+(1−α)NT+αNCi
+(C.6)
+NT[rF]=(1−α)NT+αNG+ αR
+θ
+NG
+NT
+−1
+
+(C.7)
+Note, for the proof on ideal link, we do not need the clamps
+(δH, δL). So we just use: target_cwndi =cwndi·NCi/NT. The
+clamps are needed in the jittery link execution to bound the
+impact of potentially wrong cwnd updates when estimates
+have errors. Further, in the simplification, we also substituted
+∑NG
+i=1
+1
+NCi = 1 (follows from the definition of NCi in Eq. C.2).
+We get the NG from ∑NG
+i=11.
+C.3.3
+State trajectories (alternate cwnd update line 7)
+We now follow these state update equations to see what
+happens at round large enough (time large enough). This is
+visualized in Fig. 14.
+LEMMA C.2. NT →NG exponentially fast (as long as
+NTθ>R).
+Proof. Rewriting Eq. C.7, we get:
+NT[r+1]−NG
+NT[r]−NG
+=(1−α)+α −R
+θNT[r]
+Based on this equation, if the magnitude of RHS is less than
+1 (say 0 < |RHS| ≤β < 1), then the gap between NT and NG
+decays exponentially fast. Here, |x| is the absolute value
+(magnitude) of x.
+
+NT[r+1]−NG
+NT[r]−NG
+=
+(1−α)+α −R
+θNT[r]
+≤β
+Substituting |NT[r]−NG| by x[r],
+x[r+1]≤x[r]β
+=⇒x[r+k]≤x[r]βk
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2773
+
+
+--- [Page 21] ---
+
+=⇒x→0, or NT →NG exponentially fast, as k→∞
+The RHS is average of 1 and a negative number, so it is
+always less than 1. We just need to show that it is greater than
+−1. If NTθ>R, then RHS is >−1. If we set θ=2R (we know
+R from Assumption 1.), then we just need NT >1/2.
+Recall, NT comes from queueing delay in the reference ex-
+ecution. Also recall that c
+NCi =NCi ≥1 (NCi ≥1 from definition
+of NCi in Eq. C.2). Whenever NT < 1, the cwnd for all flows
+increases as target_cwnd = cwnd
+NCi
+NT = cwnd (≥1)
+<1 > cwnd. As
+a result, the queueing delay and in-turun NT increase. Once
+NT > 1/2, it will not decrease below half, as the distance
+between NT and NG always decreases (from the proof above)
+and NG is always ≥1.
+LEMMA C.3. Given NT =NG, NCi →NG exponentially fast.
+Proof. Substituting NT =NG, and x[r]=
+NG
+NCi[r] in Eq. C.6, we
+get:
+NG
+x[r+1] = NG
+x[r]
+NG
+(1−α)NG+α NG
+x[r]
+=⇒x[r+1]=(1−α)x[r]+α
+=⇒x[r+k]=(1−α)kx[r]+(1−(1−α)k)
+=⇒x→1, or NCi →NG exponentially fast, as k→∞
+C.3.4
+State trajectories (main cwnd update line 6)
+While
+target_cwndi
+=
+cwndi· c
+NCi/c
+NTi (line 7) was
+the
+alternate
+target
+cwnd,
+our main
+target
+cwnd
+is:
+target_cwndi =cwndi·(Ri+ c
+NCiθ)/(Ri+ c
+NTiθ).
+This update is more stable/robust than the original one.
+Specifically, this does not require NTθ>R.
+Under the main target_cwnd choice , the state variables
+evolve as (by substituting the new cwnd in Eq. C.4 and Eq. C.5):
+NT[r+1]=(1−α)NT+αNG
+(C.8)
+NCi[r+1]=NCi
+R+θ((1−α)NT+αNG)
+R+θ((1−α)NT+αNCi)
+(C.9)
+LEMMA C.4. NT →NG exponentially fast.
+Proof. From NT state update equation (Eq. C.8):
+NT[r+k]=(1−α)kNT[r]+(1−(1−α)k)NG
+=⇒NT →NG exponentially fast, as k→∞
+LEMMA C.5. Given NT =NG, NCi →NG exponentially fast.
+Proof. In Eq. C.9, substituting NT =NG, and re-writing:
+NCi[r+1]−NG
+NCi −NG
+=
+R+θ(1−α)NG
+R+θ((1−α)NG+αNCi)
+Since NCi ≥1 (from the definition of NCi, i.e., Eq. C.2), the
+RHS is <1, also RHS >0 (as all quantities are non-negative).
+Say 0<RHS≤β<1, then:
+=⇒NCi[r+1]−NG
+NCi −NG
+≤β<1
+=⇒NCi[r+k]−NG ≤(NCi[r]−NG)βk
+=⇒NCi →NG exponentially fast, as k→∞(as βk →0)
+Note, since α = 1, without clamps, FRCC actually converges
+NT in 1 round with the main update and NCi in 1 round with
+the alternate update.
+C.4
+Jittery link
+C.4.1
+Bounds on estimates
+We compute bounds on the estimates made by FRCC,
+assuming each RTT can increase by up to ∆R/2 and throughput
+can decrease by γR due to (E1/E2) (Assumption 7.). As a
+result, the error in a RTT difference measurement is ±∆R
+(since (R1±∆R/2)−(R2±∆R/2)=(R1−R2)±∆R).
+In these estimates we do not incorporate impact of (E3). We
+assume there is a cruise measurement before probe that does
+not overlap with other probes (Assumption 5.), hence (E3)
+errors for cruise slot estimates (\
+rtput, d
+rRTT, bR) get filtered
+out by max/min. The theorem statement also assumes probes
+do not collide so (E3) does not affect capacity estimate.
+1. bR = R. We have assumed that bR is correct (no error)
+(Assumption 1., Assumption 7.).
+2. [
+rRTTi ∈[rRTTi,rRTTi+∆R/2].
+3. \
+rtputi ∈[rtputi/γR,rtputi]. This implies that
+C
+\
+rtputi ∈
+[NCi,NCiγR] asC/rtputi =NCi. We will use this later.
+4. c
+∆di ∈[Ei/(C+∆R),Ei/(C−∆R)]. (For bCi in c
+NCi).
+5. c
+NTi =( [
+rRTTi−Ri)/θ∈[NT,NT+∆R/2θ]
+6. Error in current flow count estimate:
+c
+NCi =
+bCi
+\
+rtputi
+= Ei
+c
+∆di
+1
+\
+rtputi
+= γ \
+rtputi c
+NTiD
+Ei/C±∆R
+1
+\
+rtputi
+=
+γc
+NTiD
+γ \
+rtputi c
+NTiD/C±∆R
+When D ≥∆R,
+=
+γc
+NTi
+γ \
+rtputi c
+NTi/C±1
+SubstitutingC/ \
+rtputi derived in step 3:
+c
+NCi ∈
+"
+NCi
+γc
+NTi
+γγR c
+NTi +NCi
+,NCi
+γc
+NTi
+γc
+NTi −NCi
+#
+(C.10)
+2774    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 22] ---
+
+Note, we used the fact that updates are synchronous in
+computing these bounds, i.e., the estimates are not impacted
+by other flows’ cwnd updates within the round Assumption
+4. (and consequently Assumption 3. and Assumption 2.).
+Note, the upper bound in Eq. C.10 may be very big (e.g.,
+when NCi is close to γc
+NTi). The clamps on c
+NCi allow us to
+manage the impact of errors during such situations.
+C.4.2
+Next state, state transition function
+We re-write the cwnd update equations (using the alternate
+update line 1, using Assumption 6.) given the errors in
+estimates, and then consider the stabilized state after all flows
+have updated their cwnd (Assumption 4.). In reality, not all
+flows may update their cwnd in a round, and the flows may not
+make measurements and updates in lock-step.
+Consider the next reference state (Eq. C.3). We plug the
+values of cwndi[rF] from line 1 in Eq. C.4 and Eq. C.5, and
+simplifying, we get the following state update equations. Note,
+these equations are in terms of c
+NCi, this term is after the clamps
+have been applied.
+NCi[rF]= ∑j(∏k̸=jNCk c
+NTk)((1−α) c
+NTj +αd
+NCj)
+(∏k̸=iNCk c
+NTk)((1−α)c
+NTi +α c
+NCi)
+(C.11)
+NT[rF]= R+θNT
+θ
+ 
+(1−α)∑
+j
+1
+NCj
++α∑
+j
+d
+NCj
+NCj
+1
+c
+NTj
+!
+−R
+θ
+= R+θNT
+θ
+ 
+(1−α)+α∑
+j
+d
+NCj
+NCj
+1
+c
+NTj
+!
+−R
+θ
+(C.12)
+We verified our algebraic steps using sympy [32]. To get
+Eq. C.12, we used ∑NG
+i=1
+1
+NCi =1 (from the definition of NCi, i.e.,
+Eq. C.2). Also observe that if we substitute c
+NTi = NT, and c
+NCi
+= NCi, we get the ideal link equations (Eq. C.6 and Eq. C.7).
+For two flows, these equations simplify to:
+NC1[rF]=1+ NC1 c
+NT1((1−α) c
+NT2 +αd
+NC2)
+NC2 c
+NT2((1−α) c
+NT1 +αd
+NC1)
+(C.13)
+NT[rF]= R+θNT
+θ
+ 
+(1−α)+α
+ 
+d
+NC1
+NC1 c
+NT1
++
+d
+NC2
+NC2 c
+NT2
+!!
+−R
+θ
+(C.14)
+These equations describe the reference state in the next
+round as a function of the reference state in the current round
+and estimates. In the previous section (§ C.4.1), we had derived
+bounds on estimates relative to the reference state. Using these,
+weobtain anexpressionsshowingboundsonthereferencestate
+in the next round ⟨NCi[rF], NT[rF]⟩in terms of the reference
+state in the current round ⟨NCi, NT⟩, and design/network pa-
+rameters, eliminating all estimates (e.g., c
+NCi,bCi, \
+rtputi, [
+rRTTi,
+etc.). We do not show these expressions for brevity.
+C.4.3
+State trajectories. Lemmas in Theorem 6.2
+We encode the transition function into Z3 to prove lemmas
+about state evolution over rounds.
+We ask Z3 to find a
+counterexample to our lemma.
+A counterexample is an
+assignment to the variables, i.e., current state (⟨NCi, NT⟩),
+design parameters (D, θ) and network parameters (C, R, D,
+γR), for which our lemma evaluates to False. If Z3 outputs
+UNSAT, i.e., there is no counterexample, then our lemma is
+True. We also used Z3 to come up with the lemmas to begin
+with. This is an iterative trial and error process where we
+ideate lemmas, get potential counterexamples and update the
+lemmas. We describe this process more in § C.4.4.
+We list the lemmas part of Theorem 6.2.
+We prove
+these lemmas for the design parameters: γ = 4, α = 1,
+δH =1.3, δL =1.25. Our design works whenever the network
+parameters satisfy: D ≥∆R, θ∗NG > R, θ > ∆R/2, γR ≤2.
+Note, θ ∗NG > R was also needed when analyzing the less
+stable cwnd update in § 6.2. This was not needed for the more
+stable cwnd update. We believe this will also not be needed
+for the jittery link for the more stable cwnd update.
+For readability, we use the following substitutions in our
+lemmas:
+NI
+Ci =NCi[r]
+NF
+Ci =NCi[r+1]
+NLB
+Ci =
+NUB
+T
+NUB
+T −1 =6.6/5.6
+NUB
+Ci =6.6
+NI
+T =NT[r]
+NF
+T =NT[r+1]
+NLB
+T =0.15
+NUB
+T =3.3
+NLB-BAND
+T
+=1.8
+NUB-BAND
+T
+=2.2
+σ=1.01
+We obtained these non-trivial constants using binary search.
+We find the most extreme values at which the lemmas continue
+to hold. E.g., if we decrease NUB
+Ci from 6.6 to 6.5, Lemma C.6
+breaks. Note, these are worst-case performance bounds, i.e.,
+over worst-case jitter patterns. Empirical performance of
+FRCC is better § 7. Further, the lemmas also only describe
+worst-case progress, e.g., NT may only show minor progress
+(σ=1.01) when it is already close to converging, but it shows
+major progress when it is far from converging because of
+asymmetry in our capacity estimate (§ 5.3.1).
+Note, these lemmas are for a two flow system (NG = 2)
+with flowsfi and f j. Since NCj =
+NCi
+NCi−1 (from the definition
+of NCi in Eq. C.2, along with NG =2), NCi represents the state
+of both the flows, and we state the lemmas only in terms of
+NCi without losing generality. The bounds NLB
+Ci and NUB
+Ci also
+satisfy NUB
+Ci =
+NLB
+Ci
+NLB
+Ci −1. As a result, NCi ∈[NLB
+Ci ,NUB
+Ci ] if and only
+if NCj ∈[NLB
+Ci ,NUB
+Ci ].
+The lemmas also assume that NT > 0 always.
+When
+NT < NLB
+T
+= 0.15, Lemma C.7 shows that NT increases
+multiplicatively, so as long as we start with NT > 0, NT > 0
+will keep remaining True.
+NT > 0 is true whenever the
+bottleneck queue occupancy is non-zero (this also ensures
+that the bottleneck link is utilized). It is okay to assume
+NT > 0 because FRCC increases cwnd whenever c
+NTi < 1
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2775
+
+
+--- [Page 23] ---
+
+(because there is always at least one flow in the system). Since
+c
+NTi ≤NT+∆R/2θ (§ C.4.1), as long as ∆R/2θ < 1 (which is
+what we are designing for), c
+NTi will always be < 1, whenever
+NT ≤0, so FRCC will keep increasing cwnd (multiplicatively),
+so that NT >0 happens exponentially fast.
+LEMMA C.6 (NT and NCi bounded). If initial NT and NCi are
+converged to a bounded range, then they remain converged.
+I.e.,
+NI
+Ci ∈[NLB
+Ci ,NUB
+Ci ] =⇒NF
+Ci ∈[NLB
+Ci ,NUB
+Ci ] and,
+NI
+T ∈[NLB
+T ,NUB
+T ] =⇒NF
+T ∈[NLB
+T ,NUB
+T ]
+LEMMA C.7 (NT converges). If initial NT is outside its
+bounded range, it converges towards the range exponentially
+fast without overshooting (e.g., if it is above the range it does
+not reduce to a value below the range), I.e.,
+NI
+T >NUB
+T =⇒
+ NF
+T ≤NI
+T/σ∨NF
+T ≤NUB
+T
+
+∧NF
+T ≥NLB
+T and,
+NI
+T <NLB
+T =⇒
+ NF
+T ≥NI
+Tσ∨NF
+T ≥NLB
+T
+
+∧NF
+T ≤NUB
+T
+LEMMA C.8 (NCi converges). If either the initial NT or initial
+NCi is not converged, then either both converge or two things
+happen: (1) at least one of them (one that is not already
+converged) improves (exponentially fast without overshooting)
+while (2) neither moves away from the bounded range. I.e.,
+¬(NI
+Ci ∈[NLB
+Ci ,NUB
+Ci ]∧NI
+T ∈[NLB
+T ,NUB
+T ])
+=⇒(NF
+Ci ∈[NLB
+Ci ,NUB
+Ci ]∧NF
+T ∈[NLB
+T ,NUB
+T ])
+∨((bad NCi improves∨bad NT improves)
+∧NCi does not degrade
+∧NT does not degrade)
+Where “bad NCi improves” means that NCi is outside its
+converged range, implies and it moves exponentially fast
+towards the range without overshooting, i.e.,
+NI
+Ci >NUB
+Ci ∧NF
+Ci ≥NLB
+Ci ∧(NF
+Ci ≤NI
+Ci/σ∨NF
+Ci ≤NUB
+Ci ) or,
+NI
+Cj >NUB
+Ci ∧NF
+Cj ≥NLB
+Ci ∧(NF
+Cj ≤NI
+Cj/σ∨NF
+Cj ≤NUB
+Ci )
+“bad NT improves” means that NT is outside the
+[NLB-BAND
+T
+, NUB-BAND
+T
+] band, implies and it moves towards it
+exponentially fast without overshooting:
+NI
+T >NUB-BAND
+T
+∧NF
+T ≥NLB-BAND
+T
+∧
+(NF
+T ≤NI
+T/σ∨NF
+T ≤NUB-BAND
+T
+) or,
+NI
+T <NLB-BAND
+T
+∧NF
+T ≤NUB-BAND
+T
+∧
+(NF
+T ≥NI
+T∗σ∨NF
+T ≥NLB-BAND
+T
+)
+“NCi does not degrade” means that if NCi is not converged
+then it does not move away from its converged range, i.e.,
+(NI
+Ci <NLB
+Ci =⇒NF
+Ci ≥NI
+Ci)∧(NI
+Ci >NUB
+Ci =⇒NF
+Ci ≤NI
+Ci)
+Similarly, “NT does not degrade” means:
+(NI
+T <NLB
+T =⇒NF
+T ≥NI
+T)∧(NI
+T >NUB
+T =⇒NF
+T ≤NI
+T)
+In “bad NCi improves”, you will notice that both the
+conjunctions use the upper bound. Instead of writing the
+second conjunction in terms of the lower bound, we write it
+in terms of NCj which refers to the other flow. If NCi is below
+its lower bound then NCj has to be above the upper bound.
+This follows from NCj =
+NCi
+NCi−1 (from the definition of NCi
+in Eq. C.2, along with NG = 2), and NUB
+Ci =
+NLB
+Ci
+NLB
+Ci −1 (from the
+constant values). We wrote it this way because the relative
+change in NCi is higher when NCi ≥1≥NCj, (i.e., the flow that
+is consuming lesser fraction of the link has higher relative
+change in their fraction after the round updates).
+We need the “neither degrades” part to ensure that the NCi
+and NT do not oscillate in a way where one of them improves
+and the other degrades and vice versa without making any
+progress towards convergence. Similarly, we also need the
+“one which is not converged improves”, or “bad” in “bad NT
+improves”. If we replace “bad NT improves”, with just “NT
+improves”, we would get “NT above the [NLB-BAND
+T
+,NUB-BAND
+T
+]
+band implies it decreases and NT below the band implies it
+increases”. This formula is true when NT is inside the band,
+and as a result satisfies the post condition of the lemma without
+forcing NCi to ever converge towards its range.
+Summary. Going back to Fig. 15, if NI
+T is outside its converged
+range (top or bottom) then it eventually converges from
+Lemma C.7. I.e., the system is in the left, center, or right
+boxes in Fig. 15. If state is in the center box, we are done (i.e.,
+system is in steady-state, it stays that way from Lemma C.6
+and we deliver the steady-state performance bounds). Left
+and right boxes are symmetric (one of NCi or NCj lies in the
+right box if the system is in left or right boxes). Without loss of
+generality, say NCi is in the right box. Then from Lemma C.8,
+if NCi does not improve, then NT must move towards the
+narrow band if it is outside the band, whenever it is inside the
+band, NCi must improve. NT can exit the narrow band but not
+leave its converged range, and the process repeats. NCi can
+never move away from the converged range. The result of
+these movements is that eventually NCi must converge. These
+movements are shown using blue arrows in Fig. 15.
+All the movements are multiplicative without any
+overshoots, thus asymptotically the system converges to
+steady-state in logarithmic steps in the total amount of
+movement. Each step is a round that lasts forO(NG) slots, with
+each slot being 4RTTs, and the total movement is bounded by
+the steady-state cwnd =C/NG∗(R+θNG)= BDP/NG+CθNG
+(this is cwnd FRCC maintains in steady-state on ideal link).
+Giving a total convergence time of O(NGlog(BDP)) RTTs.
+Note, NT may enter and exit the band multiple times, these
+are all hidden in the big-O notation.
+2776    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association
+
+
+--- [Page 24] ---
+
+C.4.4
+How we come up with the lemmas
+Coming up with the lemmas is an iterative process. We start by
+identifying a region in the state space such that if initial state is
+in the region, then the final state is in the region. This gives us
+the shaded region. A rectangular region worked for us. Note,
+the proof is not tight, the real region could be a different shape.
+Then we ideate lemmas to describe motions the state makes
+then it is outside the shaded region. Z3 may prove that the
+lemma is correct, or give us a counterexample showing how
+the state moves instead of what our lemma described. Based
+on this feedback, we update the lemma and iterate.
+D
+Fluid model analysis (different RTprops and
+multiple bottlenecks)
+Different RTprops. We compute value of biased excess delay
+from the fluid model as follows. Say in the current state, the
+RTTs (not RTprops) of the two flows are R and ρR (i.e., RTT ra-
+tio of ρ), and throughputs are fC and (1−f)C. Consequently,
+the cwnds of the flows are: cwnd1 =R· fC,cwnd2 =R·(1−f)C
+(using throughput = cwnd/RTT). When flow f1 probes, the
+delay increase seen by the probe ∆d is given by:
+cwnd1+E
+R+∆d +
+cwnd2
+ρR+∆d =C
+(D.1)
+I.e., the RTTs of both flows increase by ∆d and the sum of the
+throughputs during the probe are equal to C. We substitute
+the cwnds and solve for ∆d as a function of ρ, R, E (γD), f,
+and C. This expression is complicated and we do not show
+it. But ∆d̸ =E/C. Note, if we substitute ρ=1 in Eq. D.1, then
+∆d = E/C. If ρ > 1 (short RTprop flow probes), ∆d > E/C,
+while ∆d <E/C, when ρ<1 (long flow probes).
+Since ∆d is a complicated expression we not substitute it all
+the way through to get an updated transition function, instead
+we solve for the fixed-point indirectly. Specifically, the system
+is in steady-state when no flow has incentive to change its cwnd,
+i.e., c
+NTi = c
+NCi. Since flows measure the same queueing delay,
+c
+NT1 = c
+NT2. Thus, steady-state happens when d
+NC1 = d
+NC2. We
+substitute the biased ∆d in c
+NC (= bC/\
+rtput = E/(c
+∆d\
+rtput)).
+We get c
+NCi as a function of the system state and design/network
+parameters. Solving d
+NC1 =d
+NC2, gives us the fixed-point state
+as a function of design/network parameters. Note, in the fluid
+model, hats ( c
+NCi) and non-hat (NCi) variables are the same.
+Solving d
+NC1 = d
+NC2 requires finding roots of a high degree
+polynomial, we use numerical methods (secant method in
+sympy [32]) to approximate the root.
+Multi-bottleneck parking lot topology. The setup and
+computation of the fixed-point is similar to the different
+RTprop case. We write fluid model equations for each hop in
+the parking lot. This time, the excess delay, ∆d, when the long
+flow ( f0 in Fig. 17) probes is given by:
+cwnd0+E
+R0+∆d +
+cwnd1
+R1+∆d/hops =C
+(D.2)
+5
+10
+15
+20
+Number of ﬂows
+0.6
+0.8
+1.0
+JFI
+FRCC
+10
+20
+Number of ﬂows
+50
+100
+150
+RTT (ms)
+FRCC
+Figure 25: FRCC with more flows.
+The main difference is that if before the probe the RTTs of
+flow f0 (long flow) and f1 (short flow) were R0 and R1, then
+after the probe the RTTs become R0+∆d and R1+∆d/hops
+respectively. I.e., the increase in the RTT of the short flow
+is 1/hops times less than the increase in the RTT of the long
+flow. This is because the RTTs of all the short flow ( f1 to fhops)
+increases and f0 witnesses the sum of the delays over all hops.
+The delay at each hops is the same (due to symmetry fluid
+equations for each hop). So the total increase in RTTs of all
+the short flows matches the increase in RTT of the long flow.
+When solving for the fixed-point, c
+NTi = c
+NCi. Due to the
+same reason as above, this time, c
+NT0 = hops c
+NT1. So we solve
+for d
+NC0 =hopsd
+NC1 to determine the fixed-point.
+E
+Supplementary empirical evaluation
+Fig. 26 and Fig. 27 complement Fig. 1 and Fig. 2 to show that
+BBRv3 and Reno also cause starvation in the scenarios with
+different propagation delays and jitter.
+Impact of upper clamp with higher flow counts. Fig. 25
+shows FRCC with more flows. The upper clamp on slot count
+is Kmax = 20, and the dynamic slot count is kc
+NT, with k = 2.
+With up to 10 flows the upper clamp is not hit and JFI is close
+to 1. Beyond that there are less than kNG slots and collisions
+become more likely creating some unfairness.
+Note, since FRCC’s practical convergence speed is slow,
+to ensure flows reach steady-state, we ran this experiment with
+RTprop of 10 ms instead of our default of 50 ms (§ 7).
+F
+Glossary
+Table 1 and Table 2 parameter and state variable definitions.
+USENIX Association
+23rd USENIX Symposium on Networked Systems Design and Implementation    2777
+
+
+--- [Page 25] ---
+
+0
+100
+200
+300
+Time (s)
+0
+20
+40
+60
+Tput (Mbps)
+FRCC
+0
+100
+200
+300
+Time (s)
+0
+20
+40
+60
+Tput (Mbps)
+BBRv1
+0
+100
+200
+300
+Time (s)
+0
+20
+40
+60
+Tput (Mbps)
+BBRv3
+0
+100
+200
+300
+Time (s)
+0
+20
+40
+60
+Tput (Mbps)
+Copa
+0
+100
+200
+300
+Time (s)
+0
+20
+40
+60
+Tput (Mbps)
+Cubic
+0
+100
+200
+300
+Time (s)
+20
+40
+60
+Tput (Mbps)
+Reno
+Figure 26: Flows with round-trip propagation delay (Rtprop or R)
+of 10, 20 and 30 ms. BBR starves the (blue) flow with lower Rtprop.
+0
+100
+200
+300
+Time (s)
+0
+25
+50
+75
+Tput (Mbps)
+FRCC
+0
+100
+200
+300
+Time (s)
+25
+50
+75
+Tput (Mbps)
+BBRv1
+0
+100
+200
+300
+Time (s)
+25
+50
+75
+Tput (Mbps)
+BBRv3
+0
+100
+200
+300
+Time (s)
+0
+50
+Tput (Mbps)
+Copa
+0
+100
+200
+300
+Time (s)
+0
+50
+Tput (Mbps)
+Cubic
+0
+100
+200
+300
+Time (s)
+25
+50
+75
+Tput (Mbps)
+Reno
+Figure 27: Three flows with R =32 ms. The blue flow experiences
+32 ms of ACK aggregation. Cubic and Copa starve flows.
+Symbol
+Unit
+Domain
+Description
+Network parameters
+C
+r
+R>0
+Link capacity
+BDP
+p
+R>0
+Bandwidth delay product
+Ri, R
+s
+R>0
+Round-trip propagation delay
+Di, D
+s
+Maximum network jitter per-packet
+NG
+u
+Z≥1
+Number of flows (ground truth)
+∆R
+s
+Max (additive) error in RTT difference
+γR
+u
+R≥1
+Max (multiplicative) error in Tput
+Design parameters
+Rmax
+s
+R>0
+Assumption about maximum R
+D
+s
+R>0
+Amount of ∆R we want to tolerate
+θ
+s
+R>0
+Delay we maintain per flow
+γ
+u
+R>1
+Gain multiplier for probing
+α
+u
+(0,1]
+cwnd update weight
+δL, δH
+u
+R>1
+Clamps for cwnd update
+k
+u
+R>1
+kc
+NT = Number of slots in a round
+TP
+s
+R>0
+Probe duration (= 1 RTT)
+TR
+s
+R>0
+Time between RTprop probes (= 30 s)
+Table 1: Glossary of parameters.
+For the units: r = rate (i.e.,
+packets/seconds), s = seconds, p = packets, u = unit-less. By default,
+the domain is R≥0. Subscript i denotes quantity seen/maintained by
+flow i. We drop the subscripts when clear from context.
+Symbol
+Unit
+Domain
+Description
+cwndi
+p
+R≥1
+Congestion window size
+bCi
+r
+Link capacity estimate
+bRi
+s
+R estimate
+rRTTi, [
+rRTTi
+s
+RTT in a round
+rtputi, \
+rtputi
+r
+Throughput in a round
+NT, NTi, c
+NTi
+u
+Target flow count
+NCi, c
+NCi
+u
+NCi ≥1,
+c
+NCi ≥0
+Current flow count (from the
+perspective of flow i)
+Ei
+p
+R≥1
+Excess packets sent by probe
+∆di, c
+∆di
+s
+∆di ≥0,
+c
+∆di ∈R
+Excess delay due to probe
+Table 2: Glossary of state variables. We use hats ( [
+rRTTi) to denote
+estimates made by FRCC, and no annotation (rRTTi) to denote the
+value of the state variable in the fluid reference execution. We use
+a suffix of [r] to denote the round number (e.g., rRTTi[r], [
+rRTTi[r]).
+See Table 1 for convention on units, domain, and subscript i.
+2778    23rd USENIX Symposium on Networked Systems Design and Implementation
+USENIX Association

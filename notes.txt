@@ -1,0 +1,10 @@
+- loss detection???
+- SACK vs NACK
+- Delay-based CC algorithm to avoid congestion in normal cases and CUBIC
+  like loss-based CC algorithm to reduce congestion loss when shallow
+  in-network buffers are detected.
+
+- SACK-based loss detection integrating RACK-TLP [21] for quickly 
+  detecting tail packet losses and loss of retransmitted packets.
+
+- Sending rate limiting scheme and opportunistic FEC scheme.

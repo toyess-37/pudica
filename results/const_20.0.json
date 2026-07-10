@@ -2,14 +2,14 @@
   "test": "const_20.0",
   "bw_Mbps": 20.0,
   "summary": {
-    "label": "const_baseline",
-    "n_frames": 1789,
-    "avg_bitrate": 17.118,
-    "avg_delay": 25.674,
-    "p95_delay": 27.8,
-    "p99_delay": 28.117,
+    "label": "const",
+    "n_frames": 294,
+    "avg_bitrate": 8.961,
+    "avg_delay": 13.238,
+    "p95_delay": 19.371,
+    "p99_delay": 22.294,
     "stall_100ms": 0.0,
     "stall_200ms": 0.0,
-    "avg_bur": 0.9774
+    "avg_bur": 0.9555
   }
 }

@@ -1,18 +1,7 @@
-"""
-tests over the built-in LTE/5G traces
-mahimahi keeps traces in /mahimahi/traces/
-each trace is tested as: mm-delay <rtt/2> mm-link <up> <down> -- sender
-
-usage:
-  # built-in mahimahi traces only
-  python tests_mm.py --port 9800
-
-  # specific subset
-  python tests_mm.py --filter TMobile --port 9800
-"""
+# run mahimahi built-in traces
 import argparse, subprocess, time, tempfile
 from pathlib import Path
-from utils import RECEIVER_BIN, RESULTS_DIR, cleanup, parse_log, summarise, save, make_script, sender_cmd
+from utils import RECEIVER_BIN, RESULTS_DIR, cleanup, parse_jsonl, summarise, save, make_script, sender_cmd
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -20,7 +9,7 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 MAHIMAHI_TRACE_DIRS = [_ROOT/"mahimahi"/"traces"]
 
 def find_mahimahi_traces(filter_str=""):
-  """return list of (name, up_path, down_path) for paired traces."""
+  # find paired .up/.down trace files
   pairs = []
   for d in MAHIMAHI_TRACE_DIRS:
     if not d.exists(): continue
@@ -34,11 +23,11 @@ def find_mahimahi_traces(filter_str=""):
   return pairs
 
 def run_trace(name, up, down, rtt, dur, port):
-  """run one sender/receiver session over a given trace pair."""
+  # run one sender/receiver session over a trace pair
   procs = []
   with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
-    log = tmp / "send.log"
+    log = tmp / "send.jsonl"
     try:
       procs.append(subprocess.Popen([RECEIVER_BIN, str(port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
       time.sleep(0.3)
@@ -48,10 +37,9 @@ def run_trace(name, up, down, rtt, dur, port):
       time.sleep(dur + 4)
     finally:
       cleanup(procs)
-    raw = log.read_text() if log.exists() else ""
-  burs, bitrates, delays = parse_log(raw)
-  s = summarise(burs, bitrates, delays, label=name)
-  return s
+    burs, bitrates, delays = parse_jsonl(str(log))
+    s = summarise(burs, bitrates, delays, label=name)
+    return s
 
 def run(args):
   results = []
@@ -76,9 +64,9 @@ def run(args):
       f.write("-" * 75 + "\n")
       for s in results:
         f.write(f"{s['label']:<25} {s['avg_bitrate']:>9.2f}m {s['avg_delay']:>8.1f}ms "
-                f"{s['p99_delay']:>8.1f}ms {s['stall_100ms']*100:>11.3f}%\n")
-        
-    print(f"\nTests complete. Analysis written to: {summary_file}")
+            f"{s['p99_delay']:>8.1f}ms {s['stall_100ms']*100:>11.3f}%\n")
+    
+  print(f"\nTests complete. Analysis written to: {summary_file}")
 
 if __name__ == "__main__":
   p = argparse.ArgumentParser()

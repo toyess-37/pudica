@@ -1,26 +1,37 @@
 #pragma once
 
 #include <cstdint>
-#include <optional>
 #include <vector>
 #include <deque>
 #include "protocol.h"
+#include "logger.h"
 
 namespace PudicaAlgorithm
 {
-  constexpr double L_SEC = static_cast<double>(INTERVAL / 1e6); // 60fps
-  constexpr double GAMMA_P = 1.25;                              // (sec:4.1) pacing
-  constexpr double ALPHA = 0.85;                                // (sec:4.1) threshold for MI vs AI-MD
-  constexpr double GAMMA_MI = 0.3;                              // (sec:4.1) discounting coefficient for MI
-  constexpr double GAMMA_MD = 0.05;                             // (sec:4.1) MD param for AI-MD
-  constexpr double B_MAX = 50.0;                                // (sec:4.1) maximum bitrate in Mbps
-  constexpr double B_MIN = 0.2;                                 // (sec:4.1) minimum bitrate in Mbps --- changed it from 1.0 to 0.2 for mahimahi inbuilt traces
-  constexpr double A_MIN = -1.0;                                // (sec:4.2) lower bound capping A
-  constexpr double A_MAX = GAMMA_MD;                            // (sec:4.2) dynamic upper bound capping A; A = min(A, A_MAX*current_rate)
-  constexpr double ZETA = 0.15;                                 // (sec:4.3) temporary fallback fraction
-  constexpr double DRAIN_WIN = 0.200;                           // (sec:4.3) queue-drain window (secs)
-  constexpr uint64_t NEXT_DELAY_THRESH = 2 * INTERVAL;          // after 2 frame duration, ignore the oldest in-flight frame
-  constexpr uint64_t TIMEOUT = 10 * INTERVAL;                   // time to wait for a frame to complete processing --- delete after that
+  struct PudicaConfig
+  {
+    double B_MIN = 0.2;
+    double B_MAX = 50.0;
+    double L_SEC = (double)(pudica_net::INTERVAL / 1e6);   // 60fps
+    double GAMMA_P = 1.25;                                 // (sec:4.1) pacing
+    double ALPHA = 0.85;                                   // (sec:4.1) threshold for MI vs AI-MD
+    double GAMMA_MI = 0.3;                                 // (sec:4.1) discounting coefficient for MI
+    double GAMMA_MD = 0.05;                                // (sec:4.1) MD param for AI-MD
+    double A_MIN = -1.0;                                   // (sec:4.2) lower bound capping A
+    double A_MAX = GAMMA_MD;                               // (sec:4.2) dynamic upper bound capping A
+    double ZETA = 0.15;                                    // (sec:4.3) temporary fallback fraction
+    double DRAIN_WIN = 0.200;                              // (sec:4.3) queue-drain window (secs)
+    uint64_t NEXT_DELAY_THRESH = 2 * pudica_net::INTERVAL; // after 2 frame duration, ignore the oldest in-flight frame
+    uint64_t TIMEOUT = 10 * pudica_net::INTERVAL;          // time to wait for a frame to complete processing
+  };
+
+  enum class State
+  {
+    STEADY,
+    FALLBACK,
+    CONGESTED_WAIT,
+    DRAINING
+  };
 
   struct Sample
   {
@@ -41,56 +52,84 @@ namespace PudicaAlgorithm
     uint32_t n_inflight;        // number of currently in-flight frames
   };
 
-  double raw_BUR(double D_sec, double Dmin_sec);
-  double pacing_multiplier(double bur);
-  double corrected_BUR(double raw_BUR, const std::vector<double> &probe_delays);
+  double raw_BUR(double D_sec, double Dmin_sec, const PudicaConfig &cfg);
+  double pacing_multiplier(double bur, const PudicaConfig &cfg);
+  double corrected_BUR(double raw_BUR, const std::vector<double> &probe_delays, const PudicaConfig &cfg);
   double smoothed_BUR(const std::deque<Sample> &history, double current_rate);
-  double next_bitrate(double current_rate, double bur_tilde, uint64_t frames);
+  double next_bitrate(double current_rate, double bur_tilde, uint64_t frames, const PudicaConfig &cfg);
 
   // this struct will be the return type of Controller::on_frame_acked()
-  // returns the output (updated bitrate and pacing) after processing an acknowledged frame
   struct control_output
   {
+    bool valid;
     double bitrate;
     double pacing;
     double bur;
   };
 
-  // this will orchestrate the sender calculation/management and run the entire pudica algorithm
+  // Snapshot of controller internal state for inspection
+  struct StateSnapshot
+  {
+    double current_bitrate;
+    double current_pacing;
+    double last_bur;
+    State current_state;
+    double saved_rate;
+    uint32_t frames_up;
+    uint32_t adj_after;
+    size_t history_size;
+  };
+
   class Controller
   {
   private:
+    PudicaConfig cfg;
+
     std::deque<Sample> history;
 
-    double current_bitrate = B_MIN;
-    double current_pacing = GAMMA_P;
+    double current_bitrate;
+    double current_pacing;
     double last_bur = 0.0;
 
-    // congestion or draining
-    int congested_frames = 0;
-    bool draining = false;
-
-    // bitrate fallback for one frame only
-    bool restore_next = false; // revert on next on_frame_acked call
-    double saved_rate = 0.0;   // rate before fallback was applied [0.0 means no fallback is pending]
+    State current_state = State::STEADY;
+    double saved_rate = 0.0;
 
     // MI / AI-MD scheduling
-    uint64_t last_reset = 0; // µs timestamp of last frames_up reset
+    uint64_t last_reset = 0; // timestamp of last frames_up reset (microsecs)
     uint32_t frames_up = 0;  // frames since last reset / congestion
     uint32_t adj_after = 0;  // hold off MI/AI-MD until fid > adj_after
 
+    // Shallow-buffer CUBIC-like rate ceiling
+    double cubic_rate;               // ceiling imposed by shallow-buffer detection
+    bool shallow_congestion = false; // currently in shallow-buffer mode
+    uint64_t shallow_entered_at = 0; // timestamp when shallow mode started
+    bool loss_triggered = false;     // set by on_frame_loss()
+    double cubic_B_agg = 0.0;
+    double cubic_B_safe = 0.0;
+
+    // Reactive rate limit
+
+    Logger *lg_ = nullptr;
+
   public:
-    Controller() = default;
+    Controller(const PudicaConfig &config = PudicaConfig()) 
+      : cfg(config), current_bitrate(config.B_MIN), current_pacing(config.GAMMA_P), cubic_rate(config.B_MAX) {}
+
     double get_bitrate() const { return current_bitrate; }
     double get_pacing() const { return current_pacing; }
+    double get_b_min() const { return cfg.B_MIN; }
+    double get_b_max() const { return cfg.B_MAX; }
+    const PudicaConfig &get_config() const { return cfg; }
 
-    // implement the entire logic and all the calculations in pudica_algo.cc
-    // (return bitrate, pacing)
+    void set_logger(Logger *l) { lg_ = l; }
+    StateSnapshot get_state_snapshot() const;
+    void clear_history() { history.clear(); }
+    void check_shallow_congestion(const FrameAck &fa, double bur_corr);
+    double get_final_bitrate() const;
+    control_output on_retrans_loss_detected();
+    void force_drain();
     control_output on_frame_acked(const FrameAck &fa);
-    
     void on_frame_loss();
-
-    // returns the bitrate, pacing only when fallback criteria is triggered
-    std::optional<control_output> on_inflight_age(uint64_t age); // age is in microsecs
+    control_output on_inflight_age(uint64_t age);
   };
 }

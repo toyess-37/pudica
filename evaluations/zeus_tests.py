@@ -2,7 +2,7 @@ import argparse, subprocess, time
 from pathlib import Path
 import tempfile
 from utils import (
-  ZEUS_DIR, RECEIVER_BIN, cleanup, parse_log, summarise, save, plot_single,
+  ZEUS_DIR, RECEIVER_BIN, cleanup, parse_jsonl, summarise, save, plot_single,
   make_script, sender_cmd
 )
 
@@ -16,7 +16,7 @@ def run_zeus_trace(args):
 
   with tempfile.TemporaryDirectory() as tmp:
     tmp_path = Path(tmp)
-    send_lf = tmp_path / "send.log"
+    send_lf = tmp_path / "send.jsonl"
     procs = []
     try:
       procs.append(subprocess.Popen(
@@ -32,21 +32,21 @@ def run_zeus_trace(args):
       time.sleep(args.dur + 3)
     finally:
       cleanup(procs)
-
-    burs, bitrates, delays = parse_log(send_lf.read_text() if send_lf.exists() else "")
-
-  if not burs:
-    print("[!] Empty log. Did the sender run successfully?")
-    return
-
-  test_name = trace_path.stem
-  s = summarise(burs, bitrates, delays, label=f"zeus_{test_name}")
-  print(f"avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
-  
-  out = save({"test": "zeus_trace", "trace": trace_path.name, "summary": s}, f"zeus_{test_name}")
-
-  if args.plot:
-    plot_single(burs, bitrates, delays, title=f"Pudica over 5G Zeus Trace: {test_name}", out_svg=str(out).replace(".json", ".svg"))
+ 
+    burs, bitrates, delays = parse_jsonl(str(send_lf))
+ 
+    if not burs:
+      print("[!] Empty log. Did the sender run successfully?")
+      return
+ 
+    test_name = trace_path.stem
+    s = summarise(burs, bitrates, delays, label=f"zeus_{test_name}")
+    print(f"avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
+    
+    out = save({"test": "zeus_trace", "trace": trace_path.name, "summary": s}, f"zeus_{test_name}")
+ 
+    if args.plot:
+      plot_single(burs, bitrates, delays, title=f"Pudica over 5G Zeus Trace: {test_name}", out_svg=str(out).replace(".json", ".svg"))
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
