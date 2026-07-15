@@ -12,7 +12,7 @@ namespace pudica_net
     FEC = 0x08 // XOR parity packet
   };
 
-  constexpr uint64_t INTERVAL = 16666; // 60 FPS
+  constexpr uint64_t INTERVAL = 28571; // ~35 FPS
   constexpr uint32_t N_PROBE = 4;      // no. of probe packets
 
   /*

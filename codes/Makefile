@@ -8,7 +8,7 @@ TEST_CTRL = test_controller
 all: $(SENDER) $(RECEIVER)
 
 $(SENDER): sender.cc pudica_algo.cc logger.cc protocol.h pudica_algo.h logger.h
-	$(CXX) $(CXXFLAGS) sender.cc pudica_algo.cc logger.cc -o $(SENDER)
+	$(CXX) $(CXXFLAGS) sender.cc pudica_algo.cc logger.cc -o $(SENDER) -lX11 -lXext -lavcodec -lavutil -lswscale
 
 $(RECEIVER): receiver.cc protocol.h
 	$(CXX) $(CXXFLAGS) receiver.cc -o $(RECEIVER)

@@ -18,6 +18,8 @@
 #include "logger.h"
 #include "protocol.h"
 #include "pudica_algo.h"
+#include "../cloud_gaming/capture/capture.h"
+#include "../cloud_gaming/capture/encoder.h"
 
 using namespace std;
 using namespace std::chrono;
@@ -212,7 +214,10 @@ private:
   UdpSocket socket;
 
   atomic<bool> running{false};
-  thread t_pacer, t_listener, t_keyboard;
+  thread t_pacer, t_listener, t_keyboard, t_capture;
+
+  std::deque<std::vector<uint8_t>> frame_queue;
+  std::mutex queue_mtx;
 
   atomic<double> bitrate{0.2};
   atomic<double> pacing{PudicaAlgorithm::PudicaConfig().GAMMA_P};
@@ -230,6 +235,30 @@ private:
 
   uint32_t n_retrans_pending = 0;
   bool reactive_rate_limit = false;
+
+  void capture_loop()
+  {
+      try {
+          FrameCapture capture(nullptr);
+          VideoEncoder encoder(capture.GetWidth(), capture.GetHeight(), 35);
+          while (running) {
+              const uint8_t* bgra_data = capture.CaptureFrame();
+              auto packets = encoder.Encode(bgra_data);
+              
+              std::vector<uint8_t> frame_buf;
+              for (const auto& pkt : packets) {
+                  frame_buf.insert(frame_buf.end(), pkt.begin(), pkt.end());
+              }
+              
+              if (!frame_buf.empty()) {
+                  lock_guard<mutex> lk(queue_mtx);
+                  frame_queue.push_back(std::move(frame_buf));
+              }
+          }
+      } catch (const std::exception& e) {
+          cerr << "[sender] Capture loop error: " << e.what() << "\n";
+      }
+  }
 
   void evaluate(uint32_t fid, Frame &fr, double recv_rate, int64_t min_d)
   {
@@ -255,12 +284,28 @@ private:
 
     for (uint32_t fid = 1; running; fid++)
     {
+      std::vector<uint8_t> current_frame;
+      while (running) {
+        {
+            lock_guard<mutex> lk(queue_mtx);
+            if (!frame_queue.empty()) {
+                current_frame = std::move(frame_queue.front());
+                frame_queue.pop_front();
+                break;
+            }
+        }
+        this_thread::sleep_for(milliseconds(1));
+      }
+      if (!running) break;
+
       auto t_start = steady_clock::now();
 
       double rate = bitrate.load();
       double rho = pacing.load();
-      uint32_t f_bytes = (uint32_t)((rate * 1000.0 * 125.0) / 60.0);
-      uint32_t pkts = f_bytes / pudica_net::LOAD_SZ + 1;
+      uint32_t f_bytes = current_frame.size();
+      if (f_bytes == 0) f_bytes = 1; // Prevent div by zero
+      uint32_t pkts = f_bytes / pudica_net::LOAD_SZ;
+      if (f_bytes % pudica_net::LOAD_SZ != 0) pkts++;
 
       window.push_frame(fid, f_bytes);
 
@@ -283,7 +328,6 @@ private:
       double probe_gap = agnostic / (pudica_net::N_PROBE + 1);
 
       uint8_t buf[pudica_net::LOAD_SZ + sizeof(PktHeader)];
-      memset(buf + sizeof(PktHeader), 0, pudica_net::LOAD_SZ);
 
       // xor parity buffer for fec, reset each group
       uint8_t xor_buf[pudica_net::LOAD_SZ];
@@ -304,6 +348,17 @@ private:
         // data packets never have PROBE set, so no flag conflict possible
 
         memcpy(buf, &hdr, sizeof(PktHeader));
+        
+        uint32_t offset = pid * pudica_net::LOAD_SZ;
+        uint32_t to_copy = pudica_net::LOAD_SZ;
+        if (offset + to_copy > f_bytes) {
+            to_copy = f_bytes - offset;
+        }
+        memcpy(buf + sizeof(PktHeader), current_frame.data() + offset, to_copy);
+        if (to_copy < pudica_net::LOAD_SZ) {
+            memset(buf + sizeof(PktHeader) + to_copy, 0, pudica_net::LOAD_SZ - to_copy);
+        }
+
         socket.send(buf, sizeof(buf));
 
         // xor fec: build parity for each group of FEC_K packets
@@ -588,6 +643,7 @@ public:
     if (running)
       return;
     running = true;
+    t_capture = thread(&PudicaSender::capture_loop, this);
     t_pacer = thread(&PudicaSender::pacer, this);
     t_listener = thread(&PudicaSender::listener, this);
     t_keyboard = thread(&PudicaSender::keyboard, this);
@@ -599,6 +655,8 @@ public:
       return;
 
     running = false;
+    if (t_capture.joinable())
+      t_capture.join();
     if (t_pacer.joinable())
       t_pacer.join();
     if (t_listener.joinable())
