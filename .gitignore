@@ -1,6 +1,8 @@
 sender
 receiver
 test_controller
+capture_test
+output.h264
 
 __pycache__/
 *.py[cod]
