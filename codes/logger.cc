@@ -1,5 +1,4 @@
 #include "logger.h"
-
 #include <chrono>
 #include <cstdio>
 #include <sstream>
@@ -11,7 +10,7 @@ uint64_t logger_now_us()
   return (uint64_t)(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
 }
 
-void Logger::open(const std::string &path, const std::string &git_commit)
+void Logger::open(const std::string &path)
 {
   std::lock_guard<std::mutex> lk(mtx_);
   file_.open(path, std::ios::out | std::ios::trunc);
@@ -20,8 +19,7 @@ void Logger::open(const std::string &path, const std::string &git_commit)
 
   uint64_t ts = logger_now_us();
   // mandatory header line
-  file_ << "{\"type\":\"LOG_HEADER\",\"version\":1,\"ts_microsecs\":" << ts
-        << ",\"git_commit\":\"" << git_commit << "\"}\n";
+  file_ << "{\"type\":\"LOG_HEADER\",\"version\":1,\"ts_microsecs\":" << ts << "}\n";
   file_.flush();
 }
 
