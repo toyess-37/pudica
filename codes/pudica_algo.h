@@ -12,17 +12,17 @@ namespace PudicaAlgorithm
   {
     double B_MIN = 0.2;
     double B_MAX = 50.0;
-    double L_SEC = (double)(pudica_net::INTERVAL / 1e6);   // 60fps
-    double GAMMA_P = 1.25;                                 // (sec:4.1) pacing
-    double ALPHA = 0.85;                                   // (sec:4.1) threshold for MI vs AI-MD
-    double GAMMA_MI = 0.3;                                 // (sec:4.1) discounting coefficient for MI
-    double GAMMA_MD = 0.05;                                // (sec:4.1) MD param for AI-MD
-    double A_MIN = -1.0;                                   // (sec:4.2) lower bound capping A
-    double A_MAX = GAMMA_MD;                               // (sec:4.2) dynamic upper bound capping A
-    double ZETA = 0.15;                                    // (sec:4.3) temporary fallback fraction
-    double DRAIN_WIN = 0.200;                              // (sec:4.3) queue-drain window (secs)
-    uint64_t NEXT_DELAY_THRESH = 2 * pudica_net::INTERVAL; // after 2 frame duration, ignore the oldest in-flight frame
-    uint64_t TIMEOUT = 10 * pudica_net::INTERVAL;          // time to wait for a frame to complete processing
+    double L_SEC = static_cast<double>(pudica_net::INTERVAL / 1e6); // frame interval, ~35fps (INTERVAL = 28571us)
+    double GAMMA_P = 1.25;                                          // (sec:4.1) pacing
+    double ALPHA = 0.85;                                            // (sec:4.1) threshold for MI vs AI-MD
+    double GAMMA_MI = 0.3;                                          // (sec:4.1) discounting coefficient for MI
+    double GAMMA_MD = 0.05;                                         // (sec:4.1) MD param for AI-MD
+    double A_MIN = -1.0;                                            // (sec:4.2) lower bound capping A
+    double A_MAX = GAMMA_MD;                                        // (sec:4.2) dynamic upper bound capping A
+    double ZETA = 0.15;                                             // (sec:4.3) temporary fallback fraction
+    double DRAIN_WIN = 0.200;                                       // (sec:4.3) queue-drain window (secs)
+    uint64_t NEXT_DELAY_THRESH = 2 * pudica_net::INTERVAL;          // after 2 frame duration, ignore the oldest in-flight frame
+    uint64_t TIMEOUT = 10 * pudica_net::INTERVAL;                   // time to wait for a frame to complete processing
   };
 
   enum class State
@@ -33,11 +33,11 @@ namespace PudicaAlgorithm
     DRAINING
   };
 
-  struct Sample
+  struct Sample  // one frame sample for the history window
   {
     double bur;  // corrected BUR of the kth frame
-    double rate; // bitrate of the kth frame in Mbps
-    uint64_t ts; // timestamp recorded --> for history clearing
+    double rate; // bitrate of the kth frame (Mbps)
+    uint64_t ts; // timestamp recorded for history clearing
   };
 
   struct FrameAck
@@ -112,8 +112,8 @@ namespace PudicaAlgorithm
     Logger *lg_ = nullptr;
 
   public:
-    Controller(const PudicaConfig &config = PudicaConfig()) 
-      : cfg(config), current_bitrate(config.B_MIN), current_pacing(config.GAMMA_P), cubic_rate(config.B_MAX) {}
+    Controller(const PudicaConfig &config = PudicaConfig())
+        : cfg(config), current_bitrate(config.B_MIN), current_pacing(config.GAMMA_P), cubic_rate(config.B_MAX) {}
 
     double get_bitrate() const { return current_bitrate; }
     double get_pacing() const { return current_pacing; }

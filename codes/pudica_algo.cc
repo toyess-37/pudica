@@ -233,9 +233,8 @@ namespace PudicaAlgorithm
     double queuing_delay = fa.D - fa.Dmin;
     bool low_queue = queuing_delay < cfg.L_SEC;
     bool rate_mismatch = fa.recv_rate < current_bitrate * 0.85;
-    bool in_deep_congestion = (current_state == State::CONGESTED_WAIT || current_state == State::DRAINING);
 
-    if (loss_triggered && in_deep_congestion && low_queue && rate_mismatch && !shallow_congestion)
+    if (loss_triggered && low_queue && rate_mismatch && !shallow_congestion)
     {
       shallow_congestion = true;
       loss_triggered = false;
@@ -275,8 +274,11 @@ namespace PudicaAlgorithm
 
   control_output Controller::on_retrans_loss_detected()
   {
-    // STUB: This is currently a no-op awaiting the full LADR (NSDI 2026) implementation.
-    // We do not modify pacing or bitrate here yet.
+    // feeds the shallow-buffer detector below (sec:3.2 of the LADR paper): packet
+    // loss is the congestion signal a delay-based controller alone can't see
+    loss_triggered = true;
+    if (lg_)
+      lg_->log("RETRANS_LOSS", {{"bitrate", std::to_string(current_bitrate)}});
     return control_output{true, get_final_bitrate(), current_pacing, last_bur};
   }
 }
