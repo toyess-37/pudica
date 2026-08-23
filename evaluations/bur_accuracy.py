@@ -4,7 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from utils import (
   TRACES_DIR, RECEIVER_BIN,
-  const_trace, cleanup, parse_log, save,
+  const_trace, cleanup, parse_jsonl, save,
   make_script, sender_cmd
 )
 
@@ -20,7 +20,7 @@ def run_bur(args):
     procs = []
     with tempfile.TemporaryDirectory() as tmpdir:
       tmp = Path(tmpdir)
-      send_lf = tmp / "send.log"
+      send_lf = tmp / "send.jsonl"
       try:
         procs.append(subprocess.Popen(
           [RECEIVER_BIN, str(args.port)],
@@ -37,12 +37,12 @@ def run_bur(args):
         time.sleep(args.dur + 2)
       finally:
         cleanup(procs)
-      burs, bitrates, _ = parse_log(send_lf.read_text() if send_lf.exists() else "")
+      burs, bitrates, _ = parse_jsonl(str(send_lf))
 
     tail    = burs[int(len(burs) * 0.6):] if len(burs) > 10 else burs
     est_bur = float(np.mean(tail)) if tail else 0.0
     results.append({"bw": bw, "est_bur": round(est_bur, 4),
-                    "avg_bitrate": round(float(np.mean(bitrates)), 3) if bitrates else 0})
+            "avg_bitrate": round(float(np.mean(bitrates)), 3) if bitrates else 0})
     print(f"bw={bw} Mbps  converged bur={est_bur:.4f}")
 
   out = save({"test": "bur_accuracy", "data": results}, "bur_accuracy")

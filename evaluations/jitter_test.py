@@ -2,7 +2,7 @@ import argparse, subprocess, time, tempfile
 from pathlib import Path
 from utils import (
   TRACES_DIR, RECEIVER_BIN, PKT_BITS,
-  cleanup, parse_log, summarise, save, plot_single,
+  cleanup, parse_jsonl, summarise, save, plot_single,
   make_script, sender_cmd
 )
 
@@ -22,7 +22,7 @@ def run_jitter(args):
 
   procs = []
   with tempfile.TemporaryDirectory() as tmpdir:
-    send_lf = Path(tmpdir) / "send.log"
+    send_lf = Path(tmpdir) / "send.jsonl"
     try:
       procs.append(subprocess.Popen(
         [RECEIVER_BIN, str(args.port)],
@@ -35,17 +35,17 @@ def run_jitter(args):
       time.sleep(args.dur + 5)
     finally:
       cleanup(procs)
-
-    burs, bitrates, delays = parse_log(send_lf.read_text() if send_lf.exists() else "")
-
-  s = summarise(burs, bitrates, delays, label="jitter")
-  print(f"avg_delay={s['avg_delay']} ms  p99={s['p99_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
-  out = save({"test": "jitter", "jitter_ms": args.jitter, "summary": s}, "jitter")
-
-  if args.plot:
-    plot_single(burs, bitrates, delays,
-                title=f"jitter {args.jitter}ms / {args.period}ms period",
-                out_svg=str(out).replace(".json", ".svg"))
+ 
+    burs, bitrates, delays = parse_jsonl(str(send_lf))
+ 
+    s = summarise(burs, bitrates, delays, label="jitter")
+    print(f"avg_delay={s['avg_delay']} ms  p99={s['p99_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
+    out = save({"test": "jitter", "jitter_ms": args.jitter, "summary": s}, "jitter")
+ 
+    if args.plot:
+      plot_single(burs, bitrates, delays,
+            title=f"jitter {args.jitter}ms / {args.period}ms period",
+            out_svg=str(out).replace(".json", ".svg"))
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()

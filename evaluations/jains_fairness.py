@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from utils import (
   TRACES_DIR, RECEIVER_BIN,
-  const_trace, cleanup, parse_log, summarise, 
+  const_trace, cleanup, parse_jsonl, summarise, 
   save, smooth, make_script, sender_cmd
 )
 
@@ -20,7 +20,7 @@ def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=1
 
   fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
   fig.suptitle(f"{title}  |  Jain's index = {fairness:.3f}",
-               fontsize=13, fontweight="bold")
+         fontsize=13, fontweight="bold")
 
   for i, (burs, bitrates, delays) in enumerate(flow_data):
     if not bitrates: continue
@@ -39,8 +39,8 @@ def plot_fairness(flow_data, fairness, stagger_s=0, dur_s=45, title="", window=1
     entry_ms = i * stagger_s * 1000
     for ax in axes:
       ax.axvline(entry_ms, color=colors[i % 10],
-                 ls="--", lw=1.2, alpha=0.6,
-                 label=f"flow {i} enters" if ax is axes[0] else "")
+           ls="--", lw=1.2, alpha=0.6,
+           label=f"flow {i} enters" if ax is axes[0] else "")
 
   axes[0].set_ylabel("Bitrate (Mbps)", fontweight="bold")
   axes[1].set_ylabel("Delay (ms)",     fontweight="bold")
@@ -75,7 +75,7 @@ def run(args):
   procs = []
   with tempfile.TemporaryDirectory() as tmpdir:
     tmp = Path(tmpdir)
-    send_logs = [tmp / f"send{i}.log" for i in range(args.flows)]
+    send_logs = [tmp / f"send{i}.jsonl" for i in range(args.flows)]
 
     try:
       # start all receivers on consecutive ports outside mahimahi
@@ -98,36 +98,48 @@ def run(args):
 
     finally:
       cleanup(procs)
-
+ 
     flow_data = []
+    loss_counts = []
     for i, lf in enumerate(send_logs):
-      raw = lf.read_text() if lf.exists() else ""
-      data = parse_log(raw)
+      data = parse_jsonl(str(lf))
       if not data[0]:
         print(f"[!] flow {i} produced no data")
       flow_data.append(data)
-
-  summaries  = [summarise(*fd, label=f"flow_{i}") for i, fd in enumerate(flow_data)]
-  fairness   = jains_fairness([fd[1] for fd in flow_data])
-
-  print(f"\n[fairness] jain's index = {fairness:.3f}")
-  for s in summaries:
-    print(f"  {s['label']}: avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%")
-
-  out = save({
-    "test": "fairness",
-    "bw_Mbps": args.bw,
-    "jains_index": round(fairness, 3),
-    "per_flow": summaries,
-  }, "fairness")
-
-  if args.plot:
-    plot_fairness(
-      flow_data, fairness,
-      stagger_s=args.stagger,
-      title=f"fairness - {args.flows} flows on {args.bw} Mbps",
-      out_svg=str(out).replace(".json", ".svg"),
-    )
+ 
+      losses = 0
+      if lf.exists():
+        with open(lf, 'r') as f:
+          for line in f:
+            if '"type": "FRAME_LOSS"' in line:
+              losses += 1
+      loss_counts.append(losses)
+ 
+    summaries = []
+    for i, (burs, bitrates, delays) in enumerate(flow_data):
+      s = summarise(burs, bitrates, delays, label=f"flow_{i}")
+      s["frame_losses"] = loss_counts[i]
+      summaries.append(s)
+    fairness   = jains_fairness([fd[1] for fd in flow_data])
+ 
+    print(f"\n[fairness] jain's index = {fairness:.3f}")
+    for s in summaries:
+      print(f"  {s['label']}: avg_br={s['avg_bitrate']} Mbps  avg_delay={s['avg_delay']} ms  stall={s['stall_100ms']*100:.3f}%  losses={s['frame_losses']}")
+ 
+    out = save({
+      "test": "fairness",
+      "bw_Mbps": args.bw,
+      "jains_index": round(fairness, 3),
+      "per_flow": summaries,
+    }, "fairness")
+ 
+    if args.plot:
+      plot_fairness(
+        flow_data, fairness,
+        stagger_s=args.stagger,
+        title=f"fairness - {args.flows} flows on {args.bw} Mbps",
+        out_svg=str(out).replace(".json", ".svg"),
+      )
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
@@ -137,6 +149,6 @@ if __name__ == "__main__":
   parser.add_argument("--stagger", type=int,   default=10)
   parser.add_argument("--rtt",     type=int,   default=20)
   parser.add_argument("--port",    type=int,   default=9100,
-    help="base port; receivers use port, port+1, ... port+N-1")
+  help="base port; receivers use port, port+1, ... port+N-1")
   parser.add_argument("--plot",    action="store_true")
   run(parser.parse_args())

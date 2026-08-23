@@ -1,13 +1,9 @@
-# =========================
-# C++ Binaries
-# =========================
 sender
 receiver
+test_controller
+capture_test
+output.h264
 
-# =========================
-# Python Clutter
-# =========================
-# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -27,5 +23,5 @@ debug_send_*.log
 # *.json
 # *.up
 
-# Ignore Mahimahi temporary files or system trash
+# ignore mahimahi
 .DS_Store

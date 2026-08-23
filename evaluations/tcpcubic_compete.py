@@ -3,7 +3,8 @@ import numpy as np
 from pathlib import Path
 from utils import (
   TRACES_DIR, SENDER_BIN, RECEIVER_BIN, TARGET_IP,
-  const_trace, cleanup, parse_log, summarise, save, plot_single
+  const_trace, cleanup, parse_jsonl, summarise, save, plot_single,
+  make_script, sender_cmd
 )
 
 # tests pudica vs iperf3/cubic on a shared bottleneck.
@@ -18,7 +19,7 @@ def run(args):
   procs = []
   with tempfile.TemporaryDirectory() as tmpdir:
     tmp    = Path(tmpdir)
-    send_lf  = tmp / "send.log"
+    send_lf  = tmp / "send.jsonl"
     iperf_lf = tmp / "iperf.json"
 
     try:
@@ -35,7 +36,7 @@ def run(args):
       # pudica runs for full duration; cubic starts after cubic_delay seconds.
       # both are inside the same mahimahi shell so they share the bottleneck.
       inner = (
-        f"({SENDER_BIN} {TARGET_IP} {args.port} {args.dur} > {send_lf} 2>&1) & "
+        f"({sender_cmd(args.port, args.dur, send_lf)}) & "
         f"sleep {args.cubic_delay} && "
         f"iperf3 -c {TARGET_IP} -p {args.iperf_port} "
         f"  -t {args.cubic_dur} -J > {iperf_lf} 2>/dev/null; "
@@ -52,44 +53,55 @@ def run(args):
 
     finally:
       cleanup(procs)
-
-    burs, bitrates, delays = parse_log(send_lf.read_text() if send_lf.exists() else "")
-
+ 
+    burs, bitrates, delays = parse_jsonl(str(send_lf))
+ 
     cubic_thput = 0.0
     try:
       ij = json.loads(iperf_lf.read_text())
       cubic_thput = ij["end"]["sum_received"]["bits_per_second"] / 1e6
-    except Exception:
-      print("[!] could not parse iperf3 output - did iperf3 run?")
-
-  pudica_avg = float(np.mean(bitrates)) if bitrates else 0.0
-  total      = pudica_avg + cubic_thput
-  share      = pudica_avg / total if total > 0 else 0.0
-
-  s = summarise(burs, bitrates, delays, label="pudica_vs_cubic")
-  print(f"\n[cubic] pudica={pudica_avg:.2f} Mbps  cubic={cubic_thput:.2f} Mbps  pudica share={share*100:.1f}%")
-
-  out = save({
-    "test": f"cubic_{args.buf}",
-    "buf_pkts": args.buf,
-    "pudica_avg_Mbps": round(pudica_avg, 3),
-    "cubic_Mbps":      round(cubic_thput, 3),
-    "pudica_share":    round(share, 4),
-    "summary": s,
-  }, f"cubic_{args.buf}")
-
-  if args.plot:
-    plot_single(
-      burs, bitrates, delays,
-      title=f"pudica vs cubic  bw={args.bw} Mbps  buf={args.buf} pkts",
-      out_svg=str(out).replace(".json", ".svg"),
-    )
+    except Exception as e:
+      print(f"[!] iperf3 parse failed: {e}")
+      print("[!] Setting cubic_thput to None — result is invalid.")
+      cubic_thput = None
+ 
+    if cubic_thput is None:
+      print("[!] Iperf3 did not produce valid output. Skipping result save.")
+      return
+ 
+    pudica_avg = float(np.mean(bitrates)) if bitrates else 0.0
+ 
+    if cubic_thput == 0.0:
+      print("[!] cubic_thput is zero — competition did not happen. Aborting.")
+      return
+ 
+    total      = pudica_avg + cubic_thput
+    share      = pudica_avg / total if total > 0 else 0.0
+ 
+    s = summarise(burs, bitrates, delays, label="pudica_vs_cubic")
+    print(f"\n[cubic] pudica={pudica_avg:.2f} Mbps  cubic={cubic_thput:.2f} Mbps  pudica share={share*100:.1f}%")
+ 
+    out = save({
+      "test": f"cubic_{args.buf}",
+      "buf_pkts": args.buf,
+      "pudica_avg_Mbps": round(pudica_avg, 3),
+      "cubic_Mbps":      round(cubic_thput, 3),
+      "pudica_share":    round(share, 4),
+      "summary": s,
+    }, f"cubic_{args.buf}")
+ 
+    if args.plot:
+      plot_single(
+        burs, bitrates, delays,
+        title=f"pudica vs cubic  bw={args.bw} Mbps  buf={args.buf} pkts",
+        out_svg=str(out).replace(".json", ".svg"),
+      )
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("--bw",          type=float, default=50)
   parser.add_argument("--buf",         type=int,   default=7,
-    help="bottleneck queue in packets. 7 is approx. 10KB (paper fig18a), 50 is approx. 50KB (fig18b)")
+  help="bottleneck queue in packets. 7 is approx. 10KB (paper fig18a), 50 is approx. 50KB (fig18b)")
   parser.add_argument("--dur",         type=int,   default=30)
   parser.add_argument("--cubic-delay", type=int,   default=5,  dest="cubic_delay")
   parser.add_argument("--cubic-dur",   type=int,   default=5,  dest="cubic_dur")

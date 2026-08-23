@@ -1,77 +1,64 @@
-import argparse
-import subprocess
-import sys
-import time
+import argparse, subprocess, sys, time
 
-def print_header(title):
-  print("="*50)
-  print(f"Running test: {title}")
-  print("="*50)
+TESTS = [
+  # (name, command, group) group=0 means parallel; group=1..N means sequential
+  ("bur_5", "bur_accuracy.py --bw-list 5 --dur {dur} --port 9600", 0),
+  ("bur_10", "bur_accuracy.py --bw-list 10 --dur {dur} --port 9601", 0),
+  ("bur_15", "bur_accuracy.py --bw-list 15 --dur {dur} --port 9602", 0),
+  ("bur_20", "bur_accuracy.py --bw-list 20 --dur {dur} --port 9603", 0),
+  ("bur_25", "bur_accuracy.py --bw-list 25 --dur {dur} --port 9604", 0),
+  ("const", "const_test.py --dur {dur} --port 9700", 1),
+  ("step", "step_test.py --dur {dur} --port 9700", 1),
+  ("jitter", "jitter_test.py --dur {dur} --port 9700", 1),
+  ("fairness", "jains_fairness.py --dur {dur} --port 9100", 2),
+  ("cubic_s", "tcpcubic_compete.py --buf 7 --dur {dur} --port 9200", 2),
+  ("cubic_d", "tcpcubic_compete.py --buf 50 --dur {dur} --port 9200", 2),
+]
 
-def run_test(command):
-  try:
-    full_cmd = [sys.executable] + command.split()
-    subprocess.run(full_cmd, check=True)
-    time.sleep(2) 
-  except subprocess.CalledProcessError as e:
-    print(f"\n[!] ERROR: Test failed with command: {command}")
-    print(e)
+def run_one(name, cmd):
+  t0 = time.time()
+  r = subprocess.run([sys.executable] + cmd.split(), capture_output=True, text=True)
+  elapsed = time.time() - t0
+  return name, r.returncode, elapsed, r.stdout, r.stderr
 
 def main():
-  parser = argparse.ArgumentParser(description="Master automation script for Pudica evaluations.")
-  
-  # Global Duration Controls
-  dur_group = parser.add_mutually_exclusive_group()
-  dur_group.add_argument("--dur", type=int, default=30, help="Base duration for all tests in seconds (default: 30)")
-  parser.add_argument("--full", action="store_true", help="Run trace-based tests (Zeus) for their complete duration")
-  
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--dur", type=int, default=30)
   args = parser.parse_args()
 
-  print(f"[*] Starting full Pudica evaluation suite...")
-  print(f"[*] Base Synthetic Duration: {args.dur}s")
-  print(f"[*] Zeus Trace Mode: {'Full Duration' if args.full else f'{args.dur}s Fixed'}")
+  t_start = time.time()
+  results = {}
 
-  # test1: Baseline Convergence
-  print_header(f"Constant Link ({args.dur}s)")
-  run_test(f"const_test.py --bw 20 --dur {args.dur} --plot")
+  # Group 0: fully parallel BUR tests
+  parallel = [(n, c.format(dur=args.dur)) for n, c, g in TESTS if g == 0]
+  procs = []
+  for n, c in parallel:
+    t0 = time.time()
+    p = subprocess.Popen([sys.executable] + c.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    procs.append((n, p, t0))
+    
+  for n, p, t0 in procs:
+    out, err = p.communicate()
+    code = p.returncode
+    elapsed = time.time() - t0
+    results[n] = code
+    print(f"[{'OK' if code == 0 else 'FAIL'}] {n} ({elapsed:.1f}s)")
+    if code != 0:
+      print(f" stderr: {err[:200]}")
 
-  # test2: step trace test
-  swap_time = max(5, args.dur // 3) 
-  print_header(f"Step Test: (Bandwidth Drop at {swap_time}s)")
-  run_test(f"step_test.py --bw1 20 --bw2 10 --swap {swap_time} --dur {args.dur} --plot")
+  # Groups 1+: sequential within each group
+  for group_id in sorted(set(g for _, _, g in TESTS if g > 0)):
+    group = [(n, c.format(dur=args.dur)) for n, c, g in TESTS if g == group_id]
+    for n, c in group:
+      name, code, elapsed, out, err = run_one(n, c)
+      results[name] = code
+      print(f"[{'OK' if code == 0 else 'FAIL'}] {name} ({elapsed:.1f}s)")
+      if code != 0:
+        print(f" stderr: {err[:200]}")
 
-  # test3: jitter test
-  print_header(f"Jitter Test: ({args.dur}s)")
-  run_test(f"jitter_test.py --bw 20 --jitter 40 --period 500 --dur {args.dur} --plot")
-
-  # test4: BUR Estimation Accuracy
-  print_header(f"BUR Estimation Accuracy ({args.dur}s per point)")
-  run_test(f"bur_accuracy.py --bw-list 5,10,15,20,25 --dur {args.dur} --plot")
-
-  # test5: Jain's Fairness test
-  fairness_dur = args.dur + 15
-  print_header(f"Cross-Flow Fairness (3 Flows, {fairness_dur}s total)")
-  run_test(f"jains_fairness.py --flows 3 --bw 30 --dur {fairness_dur} --stagger 10 --plot")
-
-  # test6: TCP Cubic Competition
-  print_header(f"TCP Cubic Competition (Shallow Buffer: 7 pkts)")
-  run_test(f"tcpcubic_compete.py --bw 50 --buf 7 --dur {args.dur} --plot")
-  
-  print_header(f"TCP Cubic Competition (Deep Buffer: 50 pkts)")
-  run_test(f"tcpcubic_compete.py --bw 50 --buf 50 --dur {args.dur} --plot")
-
-  # test7: Mahimahi Built-in Traces
-  print_header(f"Mahimahi LTE Traces ({args.dur}s)")
-  run_test(f"tests_mm.py --dur {args.dur}")
-
-  # test8: Zeus 5G Traces
-  print_header("Zeus 5G Traces")
-  zeus_cmd = "zeus_batch.py --full" if args.full else f"zeus_batch.py --dur {args.dur}"
-  run_test(zeus_cmd)
-
-  print("="*60)
-  print("ALL TESTS COMPLETE! Check the 'results' folder.")
-  print("="*60)
+  total = time.time() - t_start
+  passed = sum(1 for v in results.values() if v == 0)
+  print(f"\n{passed}/{len(results)} tests passed in {total:.1f}s")
 
 if __name__ == "__main__":
   main()
