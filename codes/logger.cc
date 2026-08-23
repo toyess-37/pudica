@@ -41,11 +41,13 @@ void Logger::write(const std::string &json_line)
 
 void Logger::log(const std::string &type, uint32_t fid, const std::vector<std::pair<std::string, std::string>> &fields)
 {
-  if (!is_open()) return;
+  if (!is_open())
+    return;
 
   std::ostringstream oss;
   oss << "{ \"type\": \"" << type << "\", \"ts_microsecs\": " << logger_now_us() << ", \"fid\": " << fid;
-  for (const auto &f : fields) {
+  for (const auto &f : fields)
+  {
     oss << ", \"" << f.first << "\": " << f.second;
   }
   oss << " }";
@@ -55,11 +57,13 @@ void Logger::log(const std::string &type, uint32_t fid, const std::vector<std::p
 
 void Logger::log(const std::string &type, const std::vector<std::pair<std::string, std::string>> &fields)
 {
-  if (!is_open()) return;
+  if (!is_open())
+    return;
 
   std::ostringstream oss;
   oss << "{ \"type\": \"" << type << "\", \"ts_microsecs\": " << logger_now_us();
-  for (const auto &f : fields) {
+  for (const auto &f : fields)
+  {
     oss << ", \"" << f.first << "\": " << f.second;
   }
   oss << " }";

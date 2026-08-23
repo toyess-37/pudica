@@ -9,7 +9,9 @@ namespace pudica_net
     FIRST = 0x01,
     LAST = 0x02,
     PROBE = 0x04,
-    FEC = 0x08 // XOR parity packet
+    FEC = 0x08,        // XOR parity packet
+    RECOVERED = 0x10,  // receiver reconstructed this packet via FEC, sender should not retransmit it
+    STREAM_INFO = 0x20 // carries capture resolution instead of frame payload, frame_id is always 0
   };
 
   constexpr uint64_t INTERVAL = 28571; // ~35 FPS
@@ -34,10 +36,10 @@ namespace pudica_net
   {
     uint64_t send_time;
     uint32_t frame_id;
-    uint32_t packet_id; // seq no. of packet (UINT32_MAX-i for probes (i=1..4), UINT32_MAX-8 for FEC parity)
-    uint8_t flags;      // FIRST, or LAST, or PROBE, or FEC
+    uint32_t packet_id;  // seq no. of packet (UINT32_MAX-i for probes (i=1..4), UINT32_MAX-8 for FEC parity)
+    uint8_t flags;       // FIRST, or LAST, or PROBE, or FEC
     uint8_t retrans_seq; // ???: me
-    uint8_t fec_group;  // ???: me, ai: which FEC group this packet belongs to (data: 0..FEC_K-1; parity: group index)
+    uint8_t fec_group;   // ???: me, ai: which FEC group this packet belongs to (data: 0..FEC_K-1; parity: group index)
   };
 
   struct RecvACK
@@ -52,8 +54,15 @@ namespace pudica_net
     uint8_t retrans_seq; // me: ???
   };
 
+  struct StreamInfo
+  {
+    uint32_t width;
+    uint32_t height;
+  };
+
 #pragma pack(pop)
 
   static_assert(sizeof(PktHeader) == 19, "PktHeader size mismatch; fec_group added");
   static_assert(sizeof(RecvACK) == 34, "RecvACK size mismatch");
+  static_assert(sizeof(StreamInfo) == 8, "StreamInfo size mismatch");
 }
