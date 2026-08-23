@@ -73,8 +73,16 @@ struct Frame
   bool got_first = false;
   bool got_last = false;
   bool done = false;
-  uint8_t retrans_counter = 0;
   uint8_t last_echoed_retrans_seq = 0;
+
+  // retransmission bookkeeping (LADR sec:3.3/3.4)
+  vector<uint8_t> raw_bytes;      // original encoded bytes, kept around in case a packet needs resending
+  uint32_t pkts = 0;              // data packet count for this frame
+  vector<uint8_t> acked;          // per packet_id ack bitmap, sized to pkts
+  vector<uint64_t> pkt_send_time; // per packet_id last-sent timestamp, sized to pkts
+  bool all_sent = false;          // sender has pushed every data/FEC packet for this frame at least once
+  uint8_t retrans_round = 0;
+  bool needed_retrans = false;
 
   bool complete() const
   {
@@ -89,23 +97,63 @@ private:
   mutex mtx;
 
 public:
-  void push_frame(uint32_t fid, uint32_t f_bytes)
+  void push_frame(uint32_t fid, uint32_t f_bytes, uint32_t pkts, const vector<uint8_t> &raw)
   {
     lock_guard<mutex> lk(mtx);
     Frame fr;
     fr.bytes_out = f_bytes;
     fr.created_at = now_microsecs();
-    table[fid] = fr;
+    fr.pkts = pkts;
+    fr.acked.assign(pkts, 0);
+    fr.pkt_send_time.assign(pkts, 0);
+    fr.raw_bytes = raw;
+    table[fid] = std::move(fr);
+  }
+
+  void record_sent(uint32_t fid, uint32_t pid, uint64_t ts)
+  {
+    lock_guard<mutex> lk(mtx);
+    auto it = table.find(fid);
+    if (it == table.end() || pid >= it->second.pkt_send_time.size())
+      return;
+    it->second.pkt_send_time[pid] = ts;
+  }
+
+  void mark_all_sent(uint32_t fid)
+  {
+    lock_guard<mutex> lk(mtx);
+    auto it = table.find(fid);
+    if (it != table.end())
+      it->second.all_sent = true;
+  }
+
+  // FEC-recovered packets never reach the sender as a normal ack; the receiver
+  // tells us about them separately so we don't retransmit something it already has
+  void mark_recovered(uint32_t fid, uint32_t pid)
+  {
+    lock_guard<mutex> lk(mtx);
+    auto it = table.find(fid);
+    if (it != table.end() && pid < it->second.acked.size())
+      it->second.acked[pid] = 1;
   }
 
   bool acknowledge_packet(const RecvACK *ack, double D_pkt, double Dmin, double T_bound, bool &retrans_loss, Frame &out_fr)
   {
     lock_guard<mutex> lk(mtx);
     auto it = table.find(ack->frame_id);
-    if (it == table.end() || it->second.done)
+    if (it == table.end())
       return false;
 
     Frame &fr = it->second;
+
+    if (ack->packet_id < fr.pkts)
+      fr.acked[ack->packet_id] = 1;
+
+    // Pudica's own BUR bookkeeping is already finalized for this frame; only the
+    // ack bitmap above (used for retransmission) still needs updating past this point.
+    if (fr.done)
+      return false;
+
     if (ack->flags & PacketFlags::FIRST)
     {
       fr.t0 = ack->echoed_send;
@@ -144,6 +192,38 @@ public:
     return false;
   }
 
+  // RACK-lite: any packet_id sent more than reo_wnd_us ago and still unacked is
+  // declared lost. Only runs once every packet in the frame has been sent at least
+  // once, and only after previously-flagged pids get a fresh grace period.
+  bool collect_missing(uint32_t fid, uint64_t now, uint64_t reo_wnd_us, uint8_t &out_round,
+                        vector<uint32_t> &out_pids, vector<uint8_t> &out_bytes)
+  {
+    lock_guard<mutex> lk(mtx);
+    auto it = table.find(fid);
+    if (it == table.end())
+      return false;
+
+    Frame &fr = it->second;
+    if (!fr.all_sent)
+      return false;
+
+    for (uint32_t pid = 0; pid < fr.pkts; pid++)
+    {
+      if (!fr.acked[pid] && fr.pkt_send_time[pid] != 0 && (now - fr.pkt_send_time[pid]) > reo_wnd_us)
+        out_pids.push_back(pid);
+    }
+    if (out_pids.empty())
+      return false;
+
+    fr.retrans_round++;
+    fr.needed_retrans = true;
+    out_round = fr.retrans_round;
+    out_bytes = fr.raw_bytes;
+    for (auto pid : out_pids)
+      fr.pkt_send_time[pid] = now; // grace period before this pid can be flagged missing again
+    return true;
+  }
+
   bool get_unacked(uint32_t fid, Frame &out_fr)
   {
     lock_guard<mutex> lk(mtx);
@@ -162,10 +242,38 @@ public:
     table.erase(fid);
   }
 
-  bool is_erased(uint32_t fid)
+  // true once Pudica has evaluated this frame (or it was never known to begin with);
+  // used to advance oldest_inflight_fid past frames that only have straggling
+  // retransmissions left, which the "next delay" fallback signal doesn't care about
+  bool is_done(uint32_t fid)
   {
     lock_guard<mutex> lk(mtx);
-    return table.find(fid) == table.end();
+    auto it = table.find(fid);
+    return it == table.end() || it->second.done;
+  }
+
+  // drop table entries once every packet is finally acked, or the frame has been
+  // around long enough that retrying further isn't worth it
+  void reap(uint64_t now, uint64_t timeout_us)
+  {
+    lock_guard<mutex> lk(mtx);
+    for (auto it = table.begin(); it != table.end();)
+    {
+      Frame &fr = it->second;
+      bool all_acked = true;
+      for (auto a : fr.acked)
+      {
+        if (!a)
+        {
+          all_acked = false;
+          break;
+        }
+      }
+      if (all_acked || (now - fr.created_at) > timeout_us)
+        it = table.erase(it);
+      else
+        ++it;
+    }
   }
 };
 
@@ -234,30 +342,67 @@ private:
   uint64_t running_inflight_bytes = 0;
 
   uint32_t n_retrans_pending = 0;
-  bool reactive_rate_limit = false;
+  atomic<bool> reactive_rate_limit{false};
+  uint32_t consecutive_lossy_frames = 0;
 
   void capture_loop()
   {
-      try {
-          FrameCapture capture(nullptr);
-          VideoEncoder encoder(capture.GetWidth(), capture.GetHeight(), 35);
-          while (running) {
-              const uint8_t* bgra_data = capture.CaptureFrame();
-              auto packets = encoder.Encode(bgra_data);
-              
-              std::vector<uint8_t> frame_buf;
-              for (const auto& pkt : packets) {
-                  frame_buf.insert(frame_buf.end(), pkt.begin(), pkt.end());
-              }
-              
-              if (!frame_buf.empty()) {
-                  lock_guard<mutex> lk(queue_mtx);
-                  frame_queue.push_back(std::move(frame_buf));
-              }
-          }
-      } catch (const std::exception& e) {
-          cerr << "[sender] Capture loop error: " << e.what() << "\n";
+    try
+    {
+      FrameCapture capture(nullptr);
+      VideoEncoder encoder(capture.GetWidth(), capture.GetHeight(), 35, bitrate.load());
+
+      PktHeader ihdr{};
+      ihdr.flags = PacketFlags::STREAM_INFO;
+      StreamInfo info{(uint32_t)(capture.GetWidth()), (uint32_t)(capture.GetHeight())};
+      uint8_t ibuf[sizeof(PktHeader) + sizeof(StreamInfo)];
+      memcpy(ibuf, &ihdr, sizeof(PktHeader));
+      memcpy(ibuf + sizeof(PktHeader), &info, sizeof(StreamInfo));
+
+      uint64_t last_info_send = 0;
+
+      while (running)
+      {
+        // resend periodically in case the receiver starts listening after we do
+        uint64_t now = now_microsecs();
+        if (now - last_info_send > 1'000'000ULL)
+        {
+          socket.send(ibuf, sizeof(ibuf));
+          last_info_send = now;
+        }
+
+        encoder.SetBitrate(bitrate.load());
+        const uint8_t *bgra_data = capture.CaptureFrame();
+        auto packets = encoder.Encode(bgra_data);
+
+        std::vector<uint8_t> frame_buf;
+        for (const auto &pkt : packets)
+        {
+          frame_buf.insert(frame_buf.end(), pkt.begin(), pkt.end());
+        }
+
+        if (!frame_buf.empty())
+        {
+          lock_guard<mutex> lk(queue_mtx);
+
+          // reactive rate limit (LADR sec:3.3): if the backlog would take more than
+          // two frame intervals to drain at the current bitrate, skip this frame
+          // rather than let unsent data pile up behind pending retransmissions
+          uint64_t queued_bytes = 0;
+          for (auto &f : frame_queue)
+            queued_bytes += f.size();
+          double bytes_per_sec = bitrate.load() * 1e6 / 8.0;
+          double drain_secs = bytes_per_sec > 0 ? (queued_bytes / bytes_per_sec) : 0.0;
+
+          if (drain_secs * 1e6 <= 2.0 * pudica_net::INTERVAL)
+            frame_queue.push_back(std::move(frame_buf));
+        }
       }
+    }
+    catch (const std::exception &e)
+    {
+      cerr << "[sender] Capture loop error: " << e.what() << "\n";
+    }
   }
 
   void evaluate(uint32_t fid, Frame &fr, double recv_rate, int64_t min_d)
@@ -273,6 +418,8 @@ private:
         running_inflight_frames};
 
     auto out = ctrl.on_frame_acked(fa);
+    if (!out.valid)
+      return;
 
     bitrate.store(out.bitrate);
     pacing.store(out.pacing);
@@ -285,29 +432,34 @@ private:
     for (uint32_t fid = 1; running; fid++)
     {
       std::vector<uint8_t> current_frame;
-      while (running) {
+      while (running)
+      {
         {
-            lock_guard<mutex> lk(queue_mtx);
-            if (!frame_queue.empty()) {
-                current_frame = std::move(frame_queue.front());
-                frame_queue.pop_front();
-                break;
-            }
+          lock_guard<mutex> lk(queue_mtx);
+          if (!frame_queue.empty())
+          {
+            current_frame = std::move(frame_queue.front());
+            frame_queue.pop_front();
+            break;
+          }
         }
         this_thread::sleep_for(milliseconds(1));
       }
-      if (!running) break;
+      if (!running)
+        break;
 
       auto t_start = steady_clock::now();
 
       double rate = bitrate.load();
       double rho = pacing.load();
       uint32_t f_bytes = current_frame.size();
-      if (f_bytes == 0) f_bytes = 1; // Prevent div by zero
+      if (f_bytes == 0)
+        f_bytes = 1; // Prevent div by zero
       uint32_t pkts = f_bytes / pudica_net::LOAD_SZ;
-      if (f_bytes % pudica_net::LOAD_SZ != 0) pkts++;
+      if (f_bytes % pudica_net::LOAD_SZ != 0)
+        pkts++;
 
-      window.push_frame(fid, f_bytes);
+      window.push_frame(fid, f_bytes, pkts, current_frame);
 
       {
         lock_guard<mutex> lk(ctrl_mtx);
@@ -316,11 +468,12 @@ private:
       }
 
       double effective_pacing = rho;
-      // STUB: Disabled until real retransmission sending (LADR, NSDI 2026) is implemented
-      // if (reactive_rate_limit)
-      // {
-      //   effective_pacing = std::min(effective_pacing, 1.0);
-      // }
+      if (reactive_rate_limit.load())
+      {
+        // LADR sec:3.3 pacing rate limit: stop probing for bandwidth while packets
+        // are still being recovered, so we don't add to the congestion that caused the loss
+        effective_pacing = std::min(effective_pacing, 1.0);
+      }
 
       double sensible = pudica_net::INTERVAL / effective_pacing;
       double pkt_gap = sensible / pkts;
@@ -348,18 +501,21 @@ private:
         // data packets never have PROBE set, so no flag conflict possible
 
         memcpy(buf, &hdr, sizeof(PktHeader));
-        
+
         uint32_t offset = pid * pudica_net::LOAD_SZ;
         uint32_t to_copy = pudica_net::LOAD_SZ;
-        if (offset + to_copy > f_bytes) {
-            to_copy = f_bytes - offset;
+        if (offset + to_copy > f_bytes)
+        {
+          to_copy = f_bytes - offset;
         }
         memcpy(buf + sizeof(PktHeader), current_frame.data() + offset, to_copy);
-        if (to_copy < pudica_net::LOAD_SZ) {
-            memset(buf + sizeof(PktHeader) + to_copy, 0, pudica_net::LOAD_SZ - to_copy);
+        if (to_copy < pudica_net::LOAD_SZ)
+        {
+          memset(buf + sizeof(PktHeader) + to_copy, 0, pudica_net::LOAD_SZ - to_copy);
         }
 
         socket.send(buf, sizeof(buf));
+        window.record_sent(fid, pid, hdr.send_time);
 
         // xor fec: build parity for each group of FEC_K packets
         uint32_t grp = pid / pudica_net::FEC_K;
@@ -397,6 +553,8 @@ private:
           precise_sleep(pkt_gap);
       }
 
+      window.mark_all_sent(fid);
+
       for (uint32_t i = 0; i < pudica_net::N_PROBE && running; i++)
       {
         precise_sleep(probe_gap);
@@ -408,7 +566,6 @@ private:
         phdr.retrans_seq = 0;
         phdr.fec_group = 0;
         phdr.send_time = now_microsecs();
-        memcpy(buf, &phdr, sizeof(PktHeader));
         socket.send(&phdr, sizeof(PktHeader));
       }
 
@@ -440,6 +597,15 @@ private:
       uint32_t fid = ack->frame_id;
       if (fid < oldest_inflight_fid)
         continue;
+
+      if (ack->flags & PacketFlags::RECOVERED)
+      {
+        // receiver rebuilt this packet from FEC parity; it never actually arrived
+        // as a normal packet, so there's no OWD/RTT signal here, just an ack bit
+        window.mark_recovered(fid, ack->packet_id);
+        continue;
+      }
+
       recv_rate = ack->rate;
 
       int64_t rtt = (int64_t)(now - ack->echoed_send);
@@ -482,7 +648,7 @@ private:
           if (n_retrans_pending > 0)
             n_retrans_pending--;
           if (n_retrans_pending < 2)
-            reactive_rate_limit = false;
+            reactive_rate_limit.store(false);
         }
       }
 
@@ -493,14 +659,76 @@ private:
           lock_guard<mutex> lk(ctrl_mtx);
           if (running_inflight_frames > 0)
             running_inflight_frames--;
-          if (running_inflight_bytes >= completed_fr.bytes_out) {
+          if (running_inflight_bytes >= completed_fr.bytes_out)
+          {
             running_inflight_bytes -= completed_fr.bytes_out;
-          } else {
+          }
+          else
+          {
             logger.log("ERROR", fid, {{"msg", "\"Underflow in running_inflight_bytes on frame ack\""}});
             assert(false && "Underflow in running_inflight_bytes on frame ack (root cause: missing byte tracking)");
           }
         }
-        window.erase_frame(fid);
+        // table entry stays until every data packet is acked or it ages out (see
+        // window.reap below) -- a Pudica-complete frame may still be missing packets
+        if (!completed_fr.needed_retrans)
+          consecutive_lossy_frames = 0;
+      }
+
+      {
+        uint64_t reo_wnd = 8000; // 8ms default reordering window
+        if (rtt_min != INT64_MAX)
+          reo_wnd = max<uint64_t>(rtt_min / 2, 4000);
+
+        uint8_t round;
+        vector<uint32_t> missing;
+        vector<uint8_t> raw;
+        if (window.collect_missing(fid, now, reo_wnd, round, missing, raw))
+        {
+          uint32_t pkts = raw.size() / pudica_net::LOAD_SZ + (raw.size() % pudica_net::LOAD_SZ ? 1 : 0);
+          for (uint32_t pid : missing)
+          {
+            PktHeader hdr{};
+            hdr.frame_id = fid;
+            hdr.packet_id = pid;
+            hdr.send_time = now_microsecs();
+            hdr.retrans_seq = round;
+            hdr.fec_group = 0;
+            if (pid == 0)
+              hdr.flags |= PacketFlags::FIRST;
+            if (pid == pkts - 1)
+              hdr.flags |= PacketFlags::LAST;
+
+            uint8_t rbuf[pudica_net::LOAD_SZ + sizeof(PktHeader)];
+            memcpy(rbuf, &hdr, sizeof(PktHeader));
+            uint32_t offset = pid * pudica_net::LOAD_SZ;
+            uint32_t to_copy = min<uint32_t>(pudica_net::LOAD_SZ, raw.size() > offset ? raw.size() - offset : 0);
+            memcpy(rbuf + sizeof(PktHeader), raw.data() + offset, to_copy);
+            if (to_copy < pudica_net::LOAD_SZ)
+              memset(rbuf + sizeof(PktHeader) + to_copy, 0, pudica_net::LOAD_SZ - to_copy);
+
+            socket.send(rbuf, sizeof(rbuf));
+            window.record_sent(fid, pid, hdr.send_time);
+          }
+
+          lock_guard<mutex> lk(ctrl_mtx);
+          n_retrans_pending += (uint32_t)(missing.size());
+          if (n_retrans_pending >= 4)
+            reactive_rate_limit.store(true);
+
+          // LADR sec:3.3 requires 3 consecutive lossy frames before treating this
+          // as a genuine congestion signal, to smooth out one-off transient losses
+          consecutive_lossy_frames++;
+          if (consecutive_lossy_frames >= 3)
+          {
+            auto r_out = ctrl.on_retrans_loss_detected();
+            if (r_out.valid)
+            {
+              bitrate.store(r_out.bitrate);
+              pacing.store(r_out.pacing);
+            }
+          }
+        }
       }
 
       Frame oldest_fr;
@@ -523,21 +751,21 @@ private:
             logger.log("FRAME_LOSS", oldest_inflight_fid, {{"age_microsecs", std::to_string(age)}});
             ctrl.on_frame_loss();
 
-            // STUB: Disabled until real retransmission sending (LADR, NSDI 2026) is implemented
-            // n_retrans_pending += (oldest_fr.bytes_out / pudica_net::LOAD_SZ);
-            // if (n_retrans_pending >= 4)
-            //   reactive_rate_limit = true;
+            // a frame that timed out entirely is stale by the time we'd notice --
+            // retransmitting it is pointless for real-time video, so we just drop it
 
             bitrate.store(ctrl.get_bitrate());
             pacing.store(ctrl.get_pacing());
 
             running_inflight_frames--;
             running_inflight_bytes -= oldest_fr.bytes_out;
-            if (running_inflight_frames == (uint32_t)(-1)) {
+            if (running_inflight_frames == (uint32_t)(-1))
+            {
               logger.log("ERROR", oldest_inflight_fid, {{"msg", "\"Underflow in running_inflight_frames\""}});
               assert(false && "Underflow in running_inflight_frames (root cause: missing frame tracking)");
             }
-            if (running_inflight_bytes > 1ULL << 60) {
+            if (running_inflight_bytes > 1ULL << 60)
+            {
               logger.log("ERROR", oldest_inflight_fid, {{"msg", "\"Underflow in running_inflight_bytes\""}});
               assert(false && "Underflow in running_inflight_bytes (root cause: missing byte tracking)");
             }
@@ -548,8 +776,10 @@ private:
         }
       }
 
-      while (window.is_erased(oldest_inflight_fid) && oldest_inflight_fid <= last_done_fid)
+      while (window.is_done(oldest_inflight_fid) && oldest_inflight_fid <= last_done_fid)
         oldest_inflight_fid++;
+
+      window.reap(now, ctrl.get_config().TIMEOUT);
     }
   }
 
@@ -616,20 +846,7 @@ public:
 
   void open_logger(const std::string &path)
   {
-    std::string commit;
-    FILE *f = popen("git rev-parse --short HEAD 2>/dev/null", "r");
-    if (f)
-    {
-      char buf[16] = {};
-      if (fgets(buf, sizeof(buf), f))
-      {
-        commit = buf;
-        if (!commit.empty() && commit.back() == '\n')
-          commit.pop_back();
-      }
-      pclose(f);
-    }
-    logger.open(path, commit);
+    logger.open(path);
     ctrl.set_logger(&logger);
   }
 
