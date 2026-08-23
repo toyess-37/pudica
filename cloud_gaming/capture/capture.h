@@ -27,8 +27,9 @@ public:
 
         XWindowAttributes attributes;
         XGetWindowAttributes(display, root, &attributes);
-        width = attributes.width;
-        height = attributes.height;
+        // YUV420 chroma subsampling needs even dimensions, crop by a pixel if the screen isn't
+        width = attributes.width & ~1;
+        height = attributes.height & ~1;
 
         if (!XShmQueryExtension(display)) {
             XCloseDisplay(display);
@@ -37,6 +38,10 @@ public:
 
         image = XShmCreateImage(display, DefaultVisual(display, screen),
                                 attributes.depth, ZPixmap, NULL, &shminfo, width, height);
+        if (!image) {
+            XCloseDisplay(display);
+            throw std::runtime_error("Failed to create XShm image");
+        }
 
         shminfo.shmid = shmget(IPC_PRIVATE, image->bytes_per_line * image->height, IPC_CREAT | 0777);
         if (shminfo.shmid < 0) {

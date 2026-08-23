@@ -1,4 +1,3 @@
-// Phase 1: capture_test.cc
 // Depends on: capture.h, encoder.h
 // Purpose: Standalone executable that captures 10 seconds of X11 frames and encodes to H.264
 
@@ -70,9 +69,8 @@ int main(int argc, char** argv) {
         std::cout << "Average capture time per frame: " << avg_cap << " ms" << std::endl;
         std::cout << "Average encode time per frame:  " << avg_enc << " ms" << std::endl;
         
-        // At 35fps, we have ~28.57ms budget per frame.
+        // At 35fps, we have 28.57ms budget per frame.
         std::cout << "Total pipeline time per frame:  " << (avg_cap + avg_enc) << " ms (Budget: 28.57 ms)" << std::endl;
-
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;
         return 1;
