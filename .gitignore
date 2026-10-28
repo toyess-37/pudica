@@ -25,3 +25,18 @@ debug_send_*.log
 
 # ignore mahimahi
 .DS_Store
+# realnet run artefacts
+realnet/logs/
+realnet/__pycache__/
+
+test_transport
+results/runs/
+results/current_*.json
+results/current_*.svg
+results/CURRENT_RESULTS.md
+results/wsl_validation_*/
+results/WSL_VALIDATION_LATEST.md
+tests/VALIDATION.md
+zeus_traces/*.up
+zeus_traces/*.csv
+*.jsonl
