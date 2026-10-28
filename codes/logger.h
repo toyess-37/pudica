@@ -16,7 +16,8 @@ public:
 
   void open(const std::string &path);
   void close();
-  bool is_open() const { return file_.is_open(); }
+  bool is_open() const;
+  static std::string quote(const std::string &value);
 
   void write(const std::string &json_line);
 

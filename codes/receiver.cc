@@ -1,376 +1,190 @@
-#include <iostream>
-#include <cstring>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <chrono>
-#include <unordered_map>
-#include <vector>
-#include <cstdint>
-#include <signal.h>
 #include <algorithm>
-
-#include "protocol.h"
+#include <array>
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <set>
+#include <ctime>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include "transport.h"
 #include "../cloud_gaming/playback/decoder.h"
 #include "../cloud_gaming/playback/renderer.h"
-#include <deque>
-#include <mutex>
-#include <condition_variable>
-#include <thread>
-
-using namespace std;
-using namespace std::chrono;
 using namespace pudica_net;
-
-uint64_t now_microsecs()
-{
-  return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
-}
-
-// frame tracking state for dynamic group size
-struct FrameState {
-  uint32_t pkts = 0;
-  uint32_t max_pid = 0;
-  bool is_complete = false;
-  std::unordered_map<uint32_t, std::vector<uint8_t>> payloads;
-};
-static unordered_map<uint32_t, FrameState> frame_states;
-
-std::deque<std::vector<uint8_t>> frame_queue;
-std::mutex queue_mtx;
-std::condition_variable queue_cv;
-
-// capture resolution, learned from the sender's STREAM_INFO packets instead of being hardcoded
-std::mutex info_mtx;
-std::condition_variable info_cv;
-bool got_stream_info = false;
-uint32_t stream_width = 0;
-uint32_t stream_height = 0;
-
-void check_frame_complete(uint32_t fid) {
-    auto &fs = frame_states[fid];
-    if (fs.is_complete) return;
-    if (fs.pkts > 0 && fs.payloads.size() == fs.pkts) {
-        fs.is_complete = true;
-        std::vector<uint8_t> full_frame;
-        full_frame.reserve(fs.pkts * LOAD_SZ);
-        for (uint32_t i = 0; i < fs.pkts; i++) {
-            full_frame.insert(full_frame.end(), fs.payloads[i].begin(), fs.payloads[i].end());
-        }
-        std::lock_guard<std::mutex> lk(queue_mtx);
-        frame_queue.push_back(std::move(full_frame));
-        queue_cv.notify_one();
+static volatile sig_atomic_t interrupted=0;
+static void signal_stop(int){interrupted=1;}
+static uint64_t now_us(){return std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();}
+// Arrival time on the steady clock. The kernel stamps packets on CLOCK_REALTIME
+// when they reach the socket; subtracting the time they then waited (while this
+// thread decoded or rendered) keeps that wait out of the one-way delay and BUR.
+static uint64_t arrival_us(const msghdr& message) {
+    const uint64_t steady=now_us();
+    for(cmsghdr* c=CMSG_FIRSTHDR(&message);c;c=CMSG_NXTHDR(const_cast<msghdr*>(&message),c)) {
+        if(c->cmsg_level!=SOL_SOCKET || c->cmsg_type!=SCM_TIMESTAMPNS) continue;
+        timespec stamp{},real{};std::memcpy(&stamp,CMSG_DATA(c),sizeof(stamp));
+        clock_gettime(CLOCK_REALTIME,&real);
+        const int64_t waited=(int64_t(real.tv_sec)-stamp.tv_sec)*1'000'000+(real.tv_nsec-stamp.tv_nsec)/1000;
+        if(waited>=0 && waited<1'000'000 && uint64_t(waited)<steady) return steady-uint64_t(waited);
     }
+    return steady;
 }
-
-// fec group state: stores received payloads so we can xor-recover a missing one
-struct FecGroup
-{
-  vector<vector<uint8_t>> payloads;
-  int received = 0;
-  int missing_idx = -1;
-  bool got_parity = false;
-  uint8_t parity[LOAD_SZ];
-
-  FecGroup() : payloads(FEC_K) {}
+struct Entry {
+    ReceivedFrame frame;
+    bool played=false;
+    Entry(const PktHeader& h,uint64_t now):frame(h,now){}
 };
-
-// map (frame_id, group) -> FecGroup
-static unordered_map<uint64_t, FecGroup> fec_state;
-
-static uint64_t fec_key(uint32_t fid, uint8_t group)
-{
-  return ((uint64_t)(fid) << 8) | group;
-}
-
-static void cleanup_old_fec(uint32_t cur_fid)
-{
-  if (cur_fid < 5) return;
-  uint32_t cutoff = cur_fid - 5;
-  for (auto it = fec_state.begin(); it != fec_state.end();)
-  {
-    uint32_t fid = (uint32_t)(it->first >> 8);
-    if (fid < cutoff)
-      it = fec_state.erase(it);
-    else
-      ++it;
-  }
-  for (auto it = frame_states.begin(); it != frame_states.end();)
-  {
-    if (it->first < cutoff)
-      it = frame_states.erase(it);
-    else
-      ++it;
-  }
-}
-
-// try to recover a missing data packet using xor parity
-static bool try_recover(FecGroup &g, int grp_size, uint8_t *out)
-{
-  if (!g.got_parity) return false;
-  int missing = 0;
-  int miss_idx = -1;
-  for (int i = 0; i < grp_size; i++)
-  {
-    if (g.payloads[i].empty())
-    {
-      missing++;
-      miss_idx = i;
-    }
-  }
-  if (missing != 1) return false; // can only fix single loss
-  g.missing_idx = miss_idx;
-  memcpy(out, g.parity, LOAD_SZ);
-  for (int i = 0; i < grp_size; i++)
-  {
-    if (i == miss_idx) continue;
-    for (int b = 0; b < (int)(LOAD_SZ); b++)
-      out[b] ^= g.payloads[i][b];
-  }
-  return true;
-}
-
-volatile bool running = true;
-void handle_sigint(int)
-{
-  running = false;
-}
-
-void playback_loop() {
+int main(int argc,char** argv) {
+    int sock=-1;
     try {
-        uint32_t w, h;
-        {
-            std::unique_lock<std::mutex> lk(info_mtx);
-            info_cv.wait(lk, [] { return got_stream_info || !running; });
-            if (!running) return;
-            w = stream_width;
-            h = stream_height;
-        }
-
-        VideoDecoder decoder(w, h);
-        VideoRenderer renderer(w, h);
-
-        while (running) {
-            std::vector<uint8_t> frame_buf;
-            {
-                std::unique_lock<std::mutex> lk(queue_mtx);
-                if (queue_cv.wait_for(lk, std::chrono::milliseconds(100), []{ return !frame_queue.empty(); })) {
-                    frame_buf = std::move(frame_queue.front());
-                    frame_queue.pop_front();
+        bool headless=false,decode_only=false;
+        if(argc<2||argc>3)throw std::runtime_error("Usage: receiver <port> [--headless|--decode-only]");
+        int port=std::stoi(argv[1]);
+        if(port<1||port>65535)throw std::runtime_error("invalid port");
+        if(argc==3){headless=std::string(argv[2])=="--headless";decode_only=std::string(argv[2])=="--decode-only";
+            if(!headless&&!decode_only)throw std::runtime_error("unknown receiver option");}
+        sock=socket(AF_INET,SOCK_DGRAM,0);
+        if(sock<0)throw std::runtime_error("socket failed");
+        timeval timeout{0,10000};
+        if(setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout))<0)throw std::runtime_error("socket timeout failed");
+        sockaddr_in address{};address.sin_family=AF_INET;address.sin_port=htons(port);address.sin_addr.s_addr=INADDR_ANY;
+        const int on=1;
+        if(setsockopt(sock,SOL_SOCKET,SO_TIMESTAMPNS,&on,sizeof(on))<0)throw std::runtime_error("socket timestamps failed");
+        if(bind(sock,reinterpret_cast<sockaddr*>(&address),sizeof(address))<0)throw std::runtime_error("bind failed");
+        std::signal(SIGINT,signal_stop);std::signal(SIGTERM,signal_stop);
+        std::map<uint32_t,Entry> frames;
+        std::set<uint64_t> retired;
+        uint64_t session=0,wire_bytes=0,delivered=0,decoded=0;
+        uint32_t next=1,width=0,height=0;
+        sockaddr_in peer{};
+        bool need_key=true;
+        uint64_t last_key_request=0;
+        std::unique_ptr<VideoDecoder> decoder;
+        std::unique_ptr<VideoRenderer> renderer;
+        std::array<uint8_t,MAX_BUF+1> buffer{};
+        std::cout<<"[receiver] listening on "<<port<<std::endl;
+        while(!interrupted) {
+            sockaddr_in client{};
+            iovec vector{buffer.data(),buffer.size()};
+            alignas(cmsghdr) char control[CMSG_SPACE(sizeof(timespec))];
+            msghdr message{};message.msg_name=&client;message.msg_namelen=sizeof(client);
+            message.msg_iov=&vector;message.msg_iovlen=1;message.msg_control=control;message.msg_controllen=sizeof(control);
+            ssize_t n=recvmsg(sock,&message,0);
+            uint64_t now=n>0?arrival_us(message):now_us();
+            if(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK&&errno!=EINTR)throw std::runtime_error("receive failed");
+            PktHeader h;
+            if(n>0&&decode(buffer.data(),n,h)&&!retired.count(h.session)) {
+                bool same_peer=client.sin_addr.s_addr==peer.sin_addr.s_addr&&client.sin_port==peer.sin_port;
+                bool starts=(h.flags==STREAM_INFO)||(h.frame_id==1);
+                if(!session || (h.session!=session&&starts)) {
+                    if(session)retired.insert(session);
+                    if(retired.size()>64)throw std::runtime_error("too many session restarts; restart receiver");
+                    session=h.session;peer=client;wire_bytes=0;frames.clear();next=1;need_key=true;
+                    decoder.reset();renderer.reset();width=height=0;same_peer=true;
+                }
+                if(same_peer&&h.session==session) {
+                    wire_bytes+=n; // UDP payload bytes actually received; never count reconstructed data.
+                    if(h.flags==STREAM_INFO) {
+                        const uint8_t* data=buffer.data()+HEADER_SIZE;
+                        uint32_t w=get(data,4),v=get(data,4);
+                        if(w>=2&&v>=2&&w<=8192&&v<=8192&&!((w|v)&1)) {
+                            if(!headless&&(w!=width||v!=height)) {
+                                renderer.reset();decoder.reset();
+                                decoder=std::make_unique<VideoDecoder>(w,v);
+                                if(!decode_only)renderer=std::make_unique<VideoRenderer>(w,v);
+                                need_key=true;
+                            }
+                            width=w;height=v;
+                        }
+                    } else {
+                        auto it=frames.find(h.frame_id);
+                        if(it==frames.end()&&h.frame_id>=next&&h.frame_id-next<256&&frames.size()<256) {
+                            size_t allocated=0;
+                            for(const auto& entry:frames)allocated+=entry.second.frame.size;
+                            if(allocated+h.frame_bytes<=16*1024*1024)
+                                it=frames.try_emplace(h.frame_id,h,now).first;
+                        }
+                        if(it!=frames.end()&&it->second.frame.matches(h)) {
+                            auto& f=it->second.frame;
+                            std::optional<uint32_t> recovered;
+                            if(h.flags==FEC) {
+                                f.parity.try_emplace(h.fec_group,buffer.begin()+HEADER_SIZE,buffer.begin()+n);
+                                recovered=f.recover(h.fec_group);
+                            } else if(!(h.flags&PROBE)) {
+                                f.keyframe|=(h.flags&KEYFRAME)!=0;
+                                f.add(h.packet_id,buffer.data()+HEADER_SIZE);
+                                recovered=f.recover(h.packet_id/FEC_K);
+                            }
+                            if(f.complete()&&!f.completed_at){f.completed_at=now;++delivered;}
+                            auto acknowledge=[&](uint32_t pid,uint8_t flags,uint64_t echo,uint16_t attempt) {
+                                RecvACK a; a.flags=flags|(f.complete()?FRAME_COMPLETE:0);a.retrans_seq=attempt;
+                                a.session=session;a.echoed_send=echo;a.recv_time=now;a.frame_recv_time=f.completed_at;
+                                a.wire_bytes=wire_bytes;a.frame_id=h.frame_id;a.packet_id=pid;
+                                auto b=encode(a);
+                                if(sendto(sock,b.data(),b.size(),0,reinterpret_cast<sockaddr*>(&peer),sizeof(peer))!=static_cast<ssize_t>(b.size()))
+                                    throw std::runtime_error("ACK send failed");
+                            };
+                            if(recovered)acknowledge(*recovered,RECOVERED,0,0);
+                            if(h.flags!=FEC)acknowledge(h.packet_id,h.flags,h.send_time,h.retrans_seq);
+                        }
+                    }
                 }
             }
-            
-            if (!frame_buf.empty()) {
-                int pitch;
-                const uint8_t* bgra = decoder.Decode(frame_buf.data(), frame_buf.size(), pitch);
-                if (bgra) {
-                    renderer.Render(bgra, pitch);
+            // Ask for an IDR while waiting on one, at most every 200 ms.
+            auto request_key=[&](uint32_t fid) {
+                if(headless||!session||(last_key_request&&now-last_key_request<200'000))return;
+                last_key_request=now;
+                RecvACK a;a.flags=KEY_REQUEST;a.session=session;a.recv_time=now;a.frame_id=fid?fid:1;
+                auto b=encode(a);
+                if(sendto(sock,b.data(),b.size(),0,reinterpret_cast<sockaddr*>(&peer),sizeof(peer))!=static_cast<ssize_t>(b.size()))
+                    throw std::runtime_error("keyframe request send failed");
+            };
+            // Ordered delivery continues on receive timeouts, including an entirely missing frame.
+            while(!frames.empty()&&(headless||decoder)) {
+                auto it=frames.find(next);
+                if(it==frames.end()) {
+                    it=frames.lower_bound(next);
+                    if(it==frames.end()||now-it->second.frame.first_seen<FRAME_TIMEOUT)break;
+                    next=it->first;need_key=true;
                 }
+                auto& entry=it->second;
+                if(!entry.frame.complete()) {
+                    if(now-entry.frame.first_seen<FRAME_TIMEOUT)break;
+                    ++next;need_key=true;entry.played=true;continue;
+                }
+                if(!entry.played) {
+                    if(headless)++decoded;
+                    else if(!need_key||entry.frame.keyframe) {
+                        if(need_key){decoder->Reset();need_key=false;}
+                        auto bytes=entry.frame.assemble();int pitch=0;
+                        try {
+                            const uint8_t* image=decoder->Decode(bytes.data(),bytes.size(),pitch);
+                            if(image){++decoded;if(renderer)renderer->Render(image,pitch);}
+                        } catch(const std::runtime_error& e) {
+                            // A corrupt frame poisons references, not the session.
+                            std::cerr<<"[receiver] frame "<<it->first<<": "<<e.what()<<"; waiting for keyframe\n";
+                            need_key=true;request_key(it->first);
+                        }
+                    } else request_key(it->first);
+                    entry.played=true;
+                }
+                ++next;
             }
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "[receiver] Playback loop error: " << e.what() << "\n";
-        running = false;
-    }
-}
-
-int main(int argc, char *argv[])
-{
-  if (argc != 2)
-  {
-    cerr << "Usage: " << argv[0] << " <port>\n";
-    return 1;
-  }
-
-  int port = stoi(argv[1]);
-
-  int sock = socket(AF_INET, SOCK_DGRAM, 0);
-  if (sock < 0)
-  {
-    cerr << "[receiver] socket failed\n";
-    return 1;
-  }
-
-  int opt = 1;
-  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-  struct timeval tv{0, 200000}; // 200ms timeout, so shutdown notices `running` promptly
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = INADDR_ANY;
-  addr.sin_port = htons(port);
-
-  if (bind(sock, (sockaddr *)&addr, sizeof(addr)) < 0)
-  {
-    cerr << "[receiver] bind failed\n";
-    return 1;
-  }
-
-  cout << "[receiver] listening on port " << port << "...\n";
-
-  signal(SIGINT, handle_sigint);
-  
-  std::thread t_playback(playback_loop);
-
-  double recv_rate = 0.0;
-  uint64_t bytes_acc = 0;
-  uint64_t last_calc = now_microsecs();
-
-  uint8_t buf[MAX_BUF];
-  sockaddr_in client_addr{};
-  socklen_t client_len = sizeof(client_addr);
-
-  while (running)
-  {
-    ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, (sockaddr *)&client_addr, &client_len);
-    if (n < (ssize_t)(sizeof(PktHeader)))
-      continue;
-
-    uint64_t now = now_microsecs();
-    bytes_acc += n;
-
-    uint64_t elapsed = now - last_calc;
-    if (elapsed >= 100000)
-    {
-      recv_rate = (8.0 * bytes_acc) / elapsed; // Mbps
-      bytes_acc = 0;
-      last_calc = now;
-    }
-
-    auto *hdr = (PktHeader *)(buf);
-    uint8_t flags = hdr->flags;
-    uint32_t fid = hdr->frame_id;
-
-    // strip bad flag combos (shouldn't happen but just in case)
-    // actually data packets never have PROBE set, skip this check
-
-    if (flags & PacketFlags::STREAM_INFO)
-    {
-      if (n >= (ssize_t)(sizeof(PktHeader) + sizeof(StreamInfo)))
-      {
-        auto *info = (StreamInfo *)(buf + sizeof(PktHeader));
-        std::lock_guard<std::mutex> lk(info_mtx);
-        if (!got_stream_info)
-        {
-          stream_width = info->width;
-          stream_height = info->height;
-          got_stream_info = true;
-          info_cv.notify_one();
-        }
-      }
-      continue;
-    }
-
-    bool is_fec = flags & PacketFlags::FEC;
-
-    if (is_fec)
-    {
-      // parity packet: store and try recovery
-      if (n >= (ssize_t)(sizeof(PktHeader) + LOAD_SZ))
-      {
-        uint8_t grp = hdr->fec_group;
-        auto &g = fec_state[fec_key(fid, grp)];
-        if (!g.got_parity)
-        {
-          g.got_parity = true;
-          memcpy(g.parity, buf + sizeof(PktHeader), LOAD_SZ);
-        }
-        
-        uint32_t grp_size = FEC_K;
-        auto it = frame_states.find(fid);
-        if (it != frame_states.end()) {
-            if (it->second.pkts > 0) {
-                uint32_t pkts = it->second.pkts;
-                if (grp == (pkts - 1) / FEC_K) {
-                    grp_size = pkts - grp * FEC_K;
+            for(auto it=frames.begin();it!=frames.end();) {
+                if(now-it->second.frame.first_seen>2*FRAME_TIMEOUT) {
+                    if(!it->second.played) {next=std::max(next,it->first+1);need_key=true;}
+                    it=frames.erase(it);
                 }
-            } else {
-                uint32_t max_pid = it->second.max_pid;
-                if (grp == max_pid / FEC_K) {
-                    grp_size = (max_pid % FEC_K) + 2;
-                }
+                else ++it;
             }
+            if(renderer&&!renderer->PollEvents())break;
         }
-        grp_size = min(grp_size, FEC_K); // FecGroup::payloads is only ever sized FEC_K
-
-        uint8_t recovered[LOAD_SZ];
-        if (try_recover(g, grp_size, recovered))
-        {
-          bytes_acc += LOAD_SZ;
-          auto &fs = frame_states[fid];
-          uint32_t recovered_pid = grp * FEC_K + g.missing_idx;
-          fs.payloads[recovered_pid].assign(recovered, recovered + LOAD_SZ);
-          g.payloads[g.missing_idx] = fs.payloads[recovered_pid];
-          g.received++;
-          check_frame_complete(fid);
-
-          // tell the sender this packet doesn't need retransmitting; it never
-          // saw this pid arrive, so it would otherwise assume it was lost
-          RecvACK rack{};
-          rack.echoed_send = 0;
-          rack.recv_time = now;
-          rack.rate = recv_rate;
-          rack.frame_id = fid;
-          rack.packet_id = recovered_pid;
-          rack.flags = PacketFlags::RECOVERED;
-          rack.retrans_seq = 0;
-          sendto(sock, &rack, sizeof(RecvACK), 0, (sockaddr *)&client_addr, client_len);
-        }
-        cleanup_old_fec(fid);
-      }
-      continue;
-    }
-
-    // data or probe packet — buffer payload for fec if it's a data pkt
-    bool is_data = !(flags & PacketFlags::PROBE);
-    if (is_data && n >= (ssize_t)(sizeof(PktHeader) + LOAD_SZ))
-    {
-      uint32_t pid = hdr->packet_id;
-      
-      auto &fs = frame_states[fid];
-      fs.max_pid = max(fs.max_pid, pid);
-      if (flags & PacketFlags::LAST) {
-        fs.pkts = pid + 1;
-      }
-
-      if (fs.payloads.find(pid) == fs.payloads.end()) {
-          fs.payloads[pid].assign(buf + sizeof(PktHeader), buf + sizeof(PktHeader) + LOAD_SZ);
-          uint8_t grp = (uint8_t)(pid / FEC_K);
-          uint8_t pos = (uint8_t)(pid % FEC_K);
-          auto &g = fec_state[fec_key(fid, grp)];
-          if (g.payloads[pos].empty()) {
-            g.payloads[pos] = fs.payloads[pid];
-            g.received++;
-          }
-          check_frame_complete(fid);
-      }
-    }
-
-    // ACK every data/probe packet (not just FIRST/LAST/PROBE) so the sender can
-    // tell which individual packets are missing and retransmit them
-    bool need_ack = !is_fec;
-
-    if (need_ack)
-    {
-      RecvACK ack{};
-      ack.echoed_send = hdr->send_time;
-      ack.recv_time = now;
-      ack.rate = recv_rate;
-      ack.frame_id = hdr->frame_id;
-      ack.packet_id = hdr->packet_id;
-      ack.flags = hdr->flags;
-      ack.retrans_seq = hdr->retrans_seq;
-
-      int s = sendto(sock, &ack, sizeof(RecvACK), 0, (sockaddr *)&client_addr, client_len);
-      if (s < 0)
-        cerr << "[receiver] send error: " << strerror(errno) << "\n";
-    }
-  }
-
-  close(sock);
-  info_cv.notify_all(); // in case playback_loop is still waiting for the first STREAM_INFO packet
-  if (t_playback.joinable()) t_playback.join();
-  return 0;
+        close(sock);
+        std::cout<<"[receiver] delivered="<<delivered<<" decoded="<<decoded<<std::endl;
+        return 0;
+    } catch(const std::exception& e){if(sock>=0)close(sock);std::cerr<<"[receiver] "<<e.what()<<'\n';return 1;}
 }

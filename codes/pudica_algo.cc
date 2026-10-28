@@ -1,19 +1,15 @@
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <deque>
 #include "logger.h"
 #include "pudica_algo.h"
 
-// PROBE LOSS BEHAVIOR:
-// If fewer than 4 probes arrive, we treat it as frame loss (TIMEOUT).
-// This is conservative: we cut bitrate by 50%.
 
 namespace PudicaAlgorithm
 {
   double raw_BUR(double D_sec, double Dmin_sec, const PudicaConfig &cfg)
   {
-    return (D_sec - Dmin_sec) / cfg.L_SEC;
+    return std::max(0.0, (D_sec - Dmin_sec) / cfg.L_SEC);
   }
 
   double pacing_multiplier(double bur, const PudicaConfig &cfg)
@@ -30,7 +26,7 @@ namespace PudicaAlgorithm
   }
 
   // smoothed BUR with weighted history
-  // weight formula based on authors' reference implementation, not in the public paper text
+  // weight formula from Pudica Appendix B
   double smoothed_BUR(const std::deque<Sample> &history, double current_rate)
   {
     if (history.empty())
@@ -71,7 +67,9 @@ namespace PudicaAlgorithm
     }
     else if (bur_tilde <= 1.0)
     {
-      double tau = std::min(frames / 60.0, 5.0);
+      // Frame counter is dimensionless. Cap the exponent before evaluating it;
+      // beyond this point the additive step already reaches its upper bound.
+      double tau = std::min<double>(frames, 50.0);
       double I = (cfg.B_MAX + (std::pow(2.0, tau) / std::max(std::log(current_rate), cfg.B_MIN))) * (cfg.GAMMA_MD / 2.0);
       double A = I - (cfg.GAMMA_MD * current_rate);
       double A_max = cfg.A_MAX * current_rate;
@@ -84,6 +82,9 @@ namespace PudicaAlgorithm
 
   control_output Controller::on_frame_acked(const FrameAck &fa)
   {
+    if(fa.fid<=last_sample_id) return {false,get_final_bitrate(),current_pacing,last_bur};
+    if(last_sample_id && fa.fid!=last_sample_id+1) {congested_samples=0;loss_samples.clear();}
+    last_sample_id=fa.fid;
     double raw_bur = raw_BUR(fa.D, fa.Dmin, cfg);
     double bur_corr = corrected_BUR(raw_bur, fa.probes, cfg);
     check_shallow_congestion(fa, bur_corr);
@@ -94,105 +95,110 @@ namespace PudicaAlgorithm
     {
       if (lg_)
         lg_->log("FALLBACK_RESTORED", fa.fid, {{"restored_rate", std::to_string(saved_rate)}});
-      current_bitrate = saved_rate;
+      if(fallback_pending && saved_rate>0) current_bitrate = saved_rate;
       saved_rate = 0.0;
+      fallback_pending = false;
       current_state = State::STEADY;
     }
 
-    history.push_back({bur_corr, current_bitrate, fa.now_microsecs});
+    history.push_back({bur_corr, fa.frame_mbps>0?fa.frame_mbps:current_bitrate, fa.now_microsecs});
 
     while (!history.empty() && (fa.now_microsecs - history.front().ts) > 200'000ULL)
     {
       history.pop_front();
     }
 
-    if (bur_corr > 1.0)
+    // sec 4.2: tau restarts when the smoothed BUR exceeds one, and every five
+    // seconds on wall-clock boundaries so that competing flows reset together.
+    const double smooth_bur = smoothed_BUR(history, current_bitrate);
+    if (smooth_bur > 1.0)
+      frames_up = 0;
+    const uint64_t slot = (fa.wall_us ? fa.wall_us : fa.now_microsecs) / 5'000'000ULL;
+    if (slot != reset_slot)
     {
       frames_up = 0;
+      reset_slot = slot;
+    }
 
-      switch (current_state)
-      {
-      case State::STEADY:
-        saved_rate = current_bitrate;
-        current_state = State::FALLBACK;
-        current_bitrate = std::min(std::max(current_bitrate * (1.0 - cfg.ZETA), cfg.B_MIN), cfg.B_MAX);
-        if (lg_)
-          lg_->log("FALLBACK_SET", fa.fid, {{"saved_rate", std::to_string(saved_rate)}, {"new_rate", std::to_string(current_bitrate)}, {"trigger", "\"congested_1\""}});
-        break;
-      case State::FALLBACK:
-        current_state = State::CONGESTED_WAIT;
-        break;
-      case State::CONGESTED_WAIT:
-        current_state = State::DRAINING;
-        saved_rate = 0.0;
-        {
-          double drain_rate = (8.0 * fa.in_bytes) / (cfg.DRAIN_WIN * 1e6);
-          double new_rate = cfg.ALPHA * fa.recv_rate - drain_rate;
-          current_bitrate = std::min(std::max(new_rate, cfg.B_MIN), cfg.B_MAX);
-          adj_after = fa.fid + fa.n_inflight;
-          if (lg_)
-            lg_->log("DRAIN_START", fa.fid, {{"bur", std::to_string(bur_corr)}, {"drain_rate", std::to_string(drain_rate)}, {"new_bitrate", std::to_string(current_bitrate)}});
-        }
-        break;
-      case State::DRAINING:
-        // Already in DRAINING, do nothing. Just wait until bur_corr <= 1.0.
-        break;
+    if (bur_corr > 1.0)
+    {
+      ++congested_samples;
+      if(congested_samples==1){onset_recv_sum=0;onset_recv_n=0;}
+      onset_recv_sum+=fa.recv_rate;++onset_recv_n;
+      if(congested_samples==1 && current_state==State::STEADY) {
+        saved_rate=current_bitrate;fallback_pending=true;current_state=State::FALLBACK;
+        current_bitrate=std::clamp(current_bitrate*(1-cfg.ZETA),cfg.B_MIN,cfg.B_MAX);
+        if(lg_)lg_->log("FALLBACK_SET",fa.fid,{{"saved_rate",std::to_string(saved_rate)},
+          {"new_rate",std::to_string(current_bitrate)},{"trigger",Logger::quote("congested_frame")}});
+      } else if(congested_samples==2 && current_state!=State::DRAINING) {
+        current_state=State::CONGESTED_WAIT;
+      } else if(congested_samples>=3 && current_state!=State::DRAINING) {
+        current_state=State::DRAINING;saved_rate=0;fallback_pending=false;
+        // Eq. 11: receiving_rate averaged from the onset of congestion.
+        const double recv_rate=onset_recv_sum/onset_recv_n;
+        // Only bytes beyond the path's bandwidth-delay product sit in the
+        // bottleneck queue; the rest are in flight on an empty pipe and would
+        // be "drained" anyway. Counting them collapses the rate on long paths.
+        const double pipe_bytes=recv_rate*1e6/8*fa.base_rtt;
+        const double queued_bytes=std::max(0.0,fa.in_bytes-pipe_bytes);
+        double drain_rate=8*queued_bytes/(cfg.DRAIN_WIN*1e6);
+        current_bitrate=std::clamp(cfg.ALPHA*recv_rate-drain_rate,cfg.B_MIN,cfg.B_MAX);
+        adj_epoch=++rate_epoch;
+        if(lg_)lg_->log("DRAIN_START",fa.fid,{{"bur",std::to_string(bur_corr)},
+          {"drain_rate",std::to_string(drain_rate)},{"recv_rate",std::to_string(recv_rate)},
+          {"queued_bytes",std::to_string(queued_bytes)},{"inflight_bytes",std::to_string(fa.in_bytes)},
+          {"new_bitrate",std::to_string(current_bitrate)}});
       }
     }
     else
     {
+      congested_samples=0;
       if (current_state == State::DRAINING)
       {
         current_state = State::STEADY;
         frames_up = 0;
         saved_rate = 0.0;
         current_bitrate = std::min(std::max(fa.recv_rate, cfg.B_MIN), cfg.B_MAX);
-        adj_after = fa.fid + fa.n_inflight;
+        adj_epoch = ++rate_epoch;
         history.clear();
 
         if (lg_)
           lg_->log("DRAIN_END", fa.fid, {{"restored_bitrate", std::to_string(current_bitrate)}, {"recv_rate", std::to_string(fa.recv_rate)}});
-
-        if (lg_)
-          lg_->log("FRAME_ACKED", fa.fid, {{"bur", std::to_string(bur_corr)}, {"bitrate", std::to_string(get_final_bitrate())}, {"pacing", std::to_string(current_pacing)}, {"delay_ms", std::to_string((fa.D - fa.Dmin) * 1000.0)}, {"recv_rate", std::to_string(fa.recv_rate)}, {"n_inflight", std::to_string(fa.n_inflight)}, {"n_probes", std::to_string(fa.probes.size())}});
-
-        return {true, get_final_bitrate(), current_pacing, last_bur};
       }
-
-      if (last_reset == 0)
-        last_reset = fa.now_microsecs;
-      uint64_t time = fa.now_microsecs;
-      if (time - last_reset >= 5'000'000ULL)
+      else
       {
-        frames_up = 0;
-        last_reset = time;
-      }
-      frames_up++;
-
-      if (fa.fid > adj_after)
-      {
-        double smooth_bur = smoothed_BUR(history, current_bitrate);
-        current_bitrate = next_bitrate(current_bitrate, smooth_bur, frames_up, cfg);
-        adj_after = fa.fid + fa.n_inflight;
+        frames_up++;
+        if (fa.epoch >= adj_epoch)
+        {
+          current_bitrate = next_bitrate(current_bitrate, smooth_bur, frames_up, cfg);
+          adj_epoch = ++rate_epoch;
+        }
       }
     }
 
     if (lg_)
-      lg_->log("FRAME_ACKED", fa.fid, {{"bur", std::to_string(bur_corr)}, {"bitrate", std::to_string(get_final_bitrate())}, {"pacing", std::to_string(current_pacing)}, {"delay_ms", std::to_string((fa.D - fa.Dmin) * 1000.0)}, {"recv_rate", std::to_string(fa.recv_rate)}, {"n_inflight", std::to_string(fa.n_inflight)}, {"n_probes", std::to_string(fa.probes.size())}});
+      lg_->log("CONTROL_SAMPLE", fa.fid, {{"bur", std::to_string(bur_corr)}, {"bitrate", std::to_string(get_final_bitrate())}, {"sample_rate", std::to_string(fa.sent_bitrate)}, {"pacing", std::to_string(current_pacing)}, {"delay_ms", std::to_string((fa.D - fa.Dmin) * 1000.0)}, {"recv_rate", std::to_string(fa.recv_rate)}, {"n_inflight", std::to_string(fa.n_inflight)}, {"n_probes", std::to_string(fa.probes.size())}});
 
     return {true, get_final_bitrate(), current_pacing, last_bur};
   }
 
-  void Controller::on_frame_loss()
+  void Controller::on_frame_loss(uint64_t now_us, uint64_t min_gap_us)
   {
+    if (now_us && last_loss_backoff && now_us - last_loss_backoff < min_gap_us)
+      return;
+    last_loss_backoff = now_us;
     current_state = State::DRAINING;
     saved_rate = 0.0;
+    fallback_pending = false;
+    congested_samples = 0;
+    frames_up = 0;
     current_bitrate = std::max(current_bitrate * 0.5, cfg.B_MIN);
+    adj_epoch = ++rate_epoch;
     history.clear();
-    loss_triggered = true;
+    loss_samples.clear();
 
     if (lg_)
-      lg_->log("FRAME_LOSS", {{"new_bitrate", std::to_string(current_bitrate)}});
+      lg_->log("LOSS_BACKOFF", {{"new_bitrate", std::to_string(current_bitrate)}});
 
     if (lg_)
       lg_->log("DRAIN_START", 0, {{"bur", "0.0"}, {"drain_rate", "0.0"}, {"new_bitrate", std::to_string(current_bitrate)}});
@@ -202,23 +208,28 @@ namespace PudicaAlgorithm
   {
     return {current_bitrate, current_pacing, last_bur,
             current_state, saved_rate,
-            frames_up, adj_after, history.size()};
+            frames_up, adj_epoch, history.size()};
   }
 
   void Controller::force_drain()
   {
     current_state = State::DRAINING;
     saved_rate = 0.0;
+    fallback_pending = false;
+    congested_samples = 0;
   }
 
-  control_output Controller::on_inflight_age(uint64_t age)
+  control_output Controller::on_inflight_age(uint64_t age, uint64_t base_rtt)
   {
-    if (age < cfg.NEXT_DELAY_THRESH)
+    // A frame is only late once it exceeds the path RTT plus the allowance;
+    // a fixed threshold fires on every frame when RTT > 2 frame intervals.
+    if (age < base_rtt + cfg.NEXT_DELAY_THRESH)
       return {false, 0.0, 0.0, 0.0};
     if (current_state != State::STEADY)
       return {false, 0.0, 0.0, 0.0};
 
     saved_rate = current_bitrate;
+    fallback_pending = true;
     current_state = State::FALLBACK;
     current_bitrate = std::max(current_bitrate * (1.0 - cfg.ZETA), cfg.B_MIN);
     if (lg_)
@@ -226,26 +237,49 @@ namespace PudicaAlgorithm
     return control_output{true, get_final_bitrate(), current_pacing, last_bur};
   }
 
-  // shallow-buffer detection: cubic-like rate ceiling
-  // this is an extension beyond the core NSDI'24 paper, inspired by shallow-buffer research
+  // A loss-based ceiling inspired by LADR; the transport uses RTT timers,
+  // so this project does not implement the paper's RACK-TLP recovery.
   void Controller::check_shallow_congestion(const FrameAck &fa, double bur_corr)
   {
     double queuing_delay = fa.D - fa.Dmin;
-    bool low_queue = queuing_delay < cfg.L_SEC;
-    bool rate_mismatch = fa.recv_rate < current_bitrate * 0.85;
-
-    if (loss_triggered && low_queue && rate_mismatch && !shallow_congestion)
+    if(!fa.lossy)loss_samples.clear();
+    else {
+      loss_samples.push_back({queuing_delay,fa.frame_mbps>0?fa.frame_mbps:current_bitrate,
+                              fa.ack_bytes,fa.ack_first_us,fa.ack_last_us});
+      if(loss_samples.size()>3)loss_samples.pop_front();
+    }
+    // LADR sec 3.2: compare the frames' average bitrate with the rate at which the
+    // network ACKed their non-lost packets. LADR spans first-to-last ACK across
+    // the n frames; with per-frame pacing that span includes the idle agnostic
+    // periods and skipped frames, pulling the rate down to roughly the bitrate
+    // itself. Summing each frame's own ACK span keeps a clear margin: a paced,
+    // uncongested frame is ACKed at about rho x bitrate, a congested one at the
+    // bottleneck rate. A long-window average would just echo our sending rate.
+    double average_rate=0,average_ack=0,acked=0,span=0;
+    for(const auto& sample:loss_samples){
+      average_rate+=sample.frame_mbps;
+      if(sample.ack_last_us>sample.ack_first_us){
+        acked+=sample.ack_bytes;span+=static_cast<double>(sample.ack_last_us-sample.ack_first_us);
+      }
+    }
+    if(!loss_samples.empty()) average_rate/=static_cast<double>(loss_samples.size());
+    // No measurable arrivals (e.g. all packets lost): LADR treats the ACK rate as zero.
+    if(span>0) average_ack=8.0*acked/span;
+    if(loss_samples.size()==3 && loss_samples.front().queue<cfg.L_SEC &&
+       average_ack<average_rate)
     {
       shallow_congestion = true;
-      loss_triggered = false;
-      shallow_entered_at = fa.now_microsecs;
 
-      cubic_B_safe = std::max(0.8 * fa.recv_rate, cfg.B_MIN);
-      cubic_B_agg = std::max(current_bitrate, cubic_B_safe);
+      shallow_entered_at = fa.now_microsecs;
+      loss_samples.clear();
+
+      cubic_B_safe = std::max(0.2 * average_ack, cfg.B_MIN);
+      cubic_B_agg = std::max(average_rate, cubic_B_safe);
       cubic_rate = cubic_B_safe;
 
       if (lg_)
-        lg_->log("DRAIN_START", fa.fid, {{"bur", std::to_string(bur_corr)}, {"drain_rate", "0.0"}, {"new_bitrate", std::to_string(cubic_rate)}});
+        lg_->log("LOSS_CEILING_SET", fa.fid, {{"bur", std::to_string(bur_corr)}, {"new_bitrate", std::to_string(cubic_rate)},
+          {"ack_mbps", std::to_string(average_ack)}, {"frame_mbps", std::to_string(average_rate)}});
     }
 
     if (shallow_congestion)
@@ -254,7 +288,7 @@ namespace PudicaAlgorithm
       double B_agg = cubic_B_agg;
       double B_safe = cubic_B_safe;
 
-      double C = 0.05;
+      double C = 1.0;
       double K = std::cbrt((B_agg - B_safe) / C);
       double candidate = C * pow(t_sec - K, 3) + B_agg;
       cubic_rate = std::min(std::max(candidate, B_safe), cfg.B_MAX);
@@ -267,18 +301,28 @@ namespace PudicaAlgorithm
     }
   }
 
+  double Controller::take_encoding_bitrate()
+  {
+    const double target=get_final_bitrate();
+    if(fallback_pending) {
+      fallback_pending=false;
+      current_bitrate=std::max(saved_rate,cfg.B_MIN);
+      saved_rate=0;
+      if(lg_) lg_->log("FALLBACK_RESTORED", {{"restored_rate",std::to_string(current_bitrate)}, {"trigger",Logger::quote("next_encoding")}});
+    }
+    return target;
+  }
+
   double Controller::get_final_bitrate() const
   {
     return std::min(current_bitrate, cubic_rate);
   }
 
-  control_output Controller::on_retrans_loss_detected()
+  // LADR sec 3.3: a lost retransmission makes the reactive rate limit applicable
+  // for the session; the limit itself lives in the sender's pacer.
+  void Controller::on_retrans_loss_detected()
   {
-    // feeds the shallow-buffer detector below (sec:3.2 of the LADR paper): packet
-    // loss is the congestion signal a delay-based controller alone can't see
-    loss_triggered = true;
     if (lg_)
       lg_->log("RETRANS_LOSS", {{"bitrate", std::to_string(current_bitrate)}});
-    return control_output{true, get_final_bitrate(), current_pacing, last_bur};
   }
 }

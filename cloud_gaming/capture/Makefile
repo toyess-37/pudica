@@ -1,4 +1,4 @@
-# Phase 1: Makefile for capture test
+# Makefile for capture test
 
 CXX = g++
 CXXFLAGS = -O3 -Wall -std=c++17 -I.
@@ -9,7 +9,7 @@ SRCS = capture_test.cc
 
 all: $(TARGET)
 
-$(TARGET): $(SRCS) capture.h encoder.h
+$(TARGET): $(SRCS) capture.h encoder.h ../../codes/protocol.h
 	$(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET) $(LDFLAGS)
 
 clean:

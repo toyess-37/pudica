@@ -1,113 +1,68 @@
-// Captures X11 screen frames using XShm extension at 35 FPS
-
-#ifndef CLOUD_GAMING_CAPTURE_H
-#define CLOUD_GAMING_CAPTURE_H
-
+#pragma once
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/XShm.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#include <X11/extensions/XShm.h>
-#include <iostream>
+#include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
-#include <chrono>
-#include <thread>
 
 class FrameCapture {
+    Display* display=nullptr;
+    Window root=0;
+    XImage* image=nullptr;
+    XShmSegmentInfo shared{};
+    bool attached=false;
+    int width=0,height=0;
+    std::vector<uint8_t> pixels;
+    void release() {
+        if(attached){XShmDetach(display,&shared);XSync(display,False);}
+        if(image){image->data=nullptr;XDestroyImage(image);}
+        if(shared.shmaddr && shared.shmaddr!=reinterpret_cast<char*>(-1)) shmdt(shared.shmaddr);
+        if(shared.shmid>=0) shmctl(shared.shmid,IPC_RMID,nullptr);
+        if(display) XCloseDisplay(display);
+    }
 public:
-    FrameCapture(const char* display_name = nullptr) {
-        display = XOpenDisplay(display_name);
-        if (!display) {
-            throw std::runtime_error("Failed to open X display");
-        }
-
-        screen = DefaultScreen(display);
-        root = RootWindow(display, screen);
-
-        XWindowAttributes attributes;
-        XGetWindowAttributes(display, root, &attributes);
-        // YUV420 chroma subsampling needs even dimensions, crop by a pixel if the screen isn't
-        width = attributes.width & ~1;
-        height = attributes.height & ~1;
-
-        if (!XShmQueryExtension(display)) {
-            XCloseDisplay(display);
-            throw std::runtime_error("XShm extension not available");
-        }
-
-        image = XShmCreateImage(display, DefaultVisual(display, screen),
-                                attributes.depth, ZPixmap, NULL, &shminfo, width, height);
-        if (!image) {
-            XCloseDisplay(display);
-            throw std::runtime_error("Failed to create XShm image");
-        }
-
-        shminfo.shmid = shmget(IPC_PRIVATE, image->bytes_per_line * image->height, IPC_CREAT | 0777);
-        if (shminfo.shmid < 0) {
-            XDestroyImage(image);
-            XCloseDisplay(display);
-            throw std::runtime_error("Failed to allocate shared memory segment");
-        }
-
-        shminfo.shmaddr = image->data = (char*)shmat(shminfo.shmid, 0, 0);
-        shminfo.readOnly = False;
-
-        if (!XShmAttach(display, &shminfo)) {
-            shmdt(shminfo.shmaddr);
-            shmctl(shminfo.shmid, IPC_RMID, 0);
-            XDestroyImage(image);
-            XCloseDisplay(display);
-            throw std::runtime_error("Failed to attach shared memory");
-        }
-
-        XSync(display, False);
-
-        // Preallocate buffer to copy data out of SHM segment
-        pixel_data.resize(width * height * 4); 
+    explicit FrameCapture(const char* name=nullptr) {
+        shared.shmid=-1;
+        try {
+            display=XOpenDisplay(name);
+            if(!display) throw std::runtime_error("cannot open X display");
+            int screen=DefaultScreen(display);root=RootWindow(display,screen);
+            XWindowAttributes a{};
+            if(!XGetWindowAttributes(display,root,&a)||!XShmQueryExtension(display))
+                throw std::runtime_error("XShm screen capture unavailable");
+            width=a.width&~1;height=a.height&~1;
+            if(width<2||height<2||width>8192||height>8192) throw std::runtime_error("invalid screen dimensions");
+            image=XShmCreateImage(display,DefaultVisual(display,screen),a.depth,ZPixmap,nullptr,&shared,width,height);
+            if(!image) throw std::runtime_error("cannot create XShm image");
+            if(image->bits_per_pixel!=32||image->byte_order!=LSBFirst||
+               image->red_mask!=0xff0000||image->green_mask!=0xff00||image->blue_mask!=0xff)
+                throw std::runtime_error("capture requires a 32-bit little-endian BGRA X visual");
+            shared.shmid=shmget(IPC_PRIVATE,image->bytes_per_line*height,IPC_CREAT|0600);
+            if(shared.shmid<0) throw std::runtime_error("cannot allocate XShm memory");
+            shared.shmaddr=static_cast<char*>(shmat(shared.shmid,nullptr,0));
+            if(shared.shmaddr==reinterpret_cast<char*>(-1)) throw std::runtime_error("cannot map XShm memory");
+            image->data=shared.shmaddr;shared.readOnly=False;
+            if(!XShmAttach(display,&shared)) throw std::runtime_error("cannot attach XShm memory");
+            attached=true;XSync(display,False);
+            // Remove the segment automatically after the last attachment is released.
+            shmctl(shared.shmid,IPC_RMID,nullptr);
+            pixels.resize(static_cast<size_t>(width)*height*4);
+        } catch(...) {release();throw;}
     }
-
-    ~FrameCapture() {
-        if (display && image) {
-            XShmDetach(display, &shminfo);
-            XDestroyImage(image);
-            shmdt(shminfo.shmaddr);
-            shmctl(shminfo.shmid, IPC_RMID, 0);
-            XCloseDisplay(display);
-        }
-    }
-
-    int GetWidth() const { return width; }
-    int GetHeight() const { return height; }
-
-    // Blocks to maintain ~35fps, returns a pointer to the captured BGRA pixel data
+    ~FrameCapture(){release();}
+    FrameCapture(const FrameCapture&)=delete;
+    FrameCapture& operator=(const FrameCapture&)=delete;
+    int GetWidth() const {return width;}
+    int GetHeight() const {return height;}
+    // Scheduling belongs to the caller; each call captures one image.
     const uint8_t* CaptureFrame() {
-        auto now = std::chrono::steady_clock::now();
-        auto target_time = last_capture_time + std::chrono::microseconds(28571); // 1000000us / 35
-        
-        if (now < target_time) {
-            std::this_thread::sleep_until(target_time);
-        }
-        
-        XShmGetImage(display, root, image, 0, 0, AllPlanes);
-        // Note: XShmGetImage writes directly into image->data which we mapped
-        std::copy(image->data, image->data + (width * height * 4), pixel_data.begin());
-
-        last_capture_time = std::chrono::steady_clock::now();
-        return pixel_data.data();
+        if(!XShmGetImage(display,root,image,0,0,AllPlanes)) throw std::runtime_error("XShm capture failed");
+        for(int y=0;y<height;++y)
+            std::memcpy(pixels.data()+static_cast<size_t>(y)*width*4,image->data+y*image->bytes_per_line,width*4);
+        return pixels.data();
     }
-
-private:
-    Display* display = nullptr;
-    int screen = 0;
-    Window root = 0;
-    XImage* image = nullptr;
-    XShmSegmentInfo shminfo;
-    int width = 0;
-    int height = 0;
-
-    std::vector<uint8_t> pixel_data;
-    std::chrono::steady_clock::time_point last_capture_time = std::chrono::steady_clock::now();
 };
-
-#endif // CLOUD_GAMING_CAPTURE_H

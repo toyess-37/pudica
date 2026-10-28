@@ -7,11 +7,13 @@
 #include <iostream>
 #include <numeric>
 #include <chrono>
+#include <thread>
+#include "../../codes/protocol.h"
 
 int main(int argc, char** argv) {
     try {
-        std::cout << "Initializing Capture on :99..." << std::endl;
-        FrameCapture capture(":99");
+        std::cout << "Initializing Capture..." << std::endl;
+        FrameCapture capture(argc>1?argv[1]:nullptr);
         int width = capture.GetWidth();
         int height = capture.GetHeight();
         std::cout << "Capture initialized. Resolution: " << width << "x" << height << std::endl;
@@ -26,13 +28,15 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        const int target_frames = 35 * 10; // 10 seconds at 35 fps
+        const int target_frames = pudica_net::FPS * 10; // 10 seconds at 35 fps
         std::vector<double> capture_times;
         std::vector<double> encode_times;
 
         std::cout << "Starting 10-second capture loop..." << std::endl;
 
+        auto deadline=std::chrono::steady_clock::now();
         for (int i = 0; i < target_frames; ++i) {
+            deadline+=std::chrono::microseconds(pudica_net::INTERVAL);
             auto start_cap = std::chrono::high_resolution_clock::now();
             const uint8_t* bgra_data = capture.CaptureFrame();
             auto end_cap = std::chrono::high_resolution_clock::now();
@@ -48,6 +52,7 @@ int main(int argc, char** argv) {
             double cap_time_ms = std::chrono::duration<double, std::milli>(end_cap - start_cap).count();
             double enc_time_ms = std::chrono::duration<double, std::milli>(end_enc - start_enc).count();
             
+            std::this_thread::sleep_until(deadline);
             capture_times.push_back(cap_time_ms);
             encode_times.push_back(enc_time_ms);
 

@@ -21,7 +21,7 @@ namespace PudicaAlgorithm
     double A_MAX = GAMMA_MD;                                        // (sec:4.2) dynamic upper bound capping A
     double ZETA = 0.15;                                             // (sec:4.3) temporary fallback fraction
     double DRAIN_WIN = 0.200;                                       // (sec:4.3) queue-drain window (secs)
-    uint64_t NEXT_DELAY_THRESH = 2 * pudica_net::INTERVAL;          // after 2 frame duration, ignore the oldest in-flight frame
+    uint64_t NEXT_DELAY_THRESH = 2 * pudica_net::INTERVAL;          // (sec:4.3) next delay allowed beyond the base RTT
     uint64_t TIMEOUT = 10 * pudica_net::INTERVAL;                   // time to wait for a frame to complete processing
   };
 
@@ -49,7 +49,17 @@ namespace PudicaAlgorithm
     double recv_rate;           // frame receiving rate (Mbps)
     double in_bytes;            // total bytes across all in-flight frames
     uint64_t now_microsecs;     // current time (microsecs, for periodic resets)
-    uint32_t n_inflight;        // number of currently in-flight frames
+    uint32_t n_inflight;
+    double sent_bitrate = 0.0;
+    bool lossy = false;         // frame needed FEC or retransmission
+    // LADR sec 3.2: payload bytes of packets that arrived on their first attempt,
+    // and the receiver-clock span (us) between this frame's first and last such arrival.
+    double frame_mbps = 0.0;    // actual encoded payload bitrate of this frame
+    double ack_bytes = 0.0;
+    uint64_t ack_first_us = 0, ack_last_us = 0;
+    uint32_t epoch = 0;         // Controller::encoding_epoch() when this frame was encoded
+    uint64_t wall_us = 0;       // wall clock (us) for flow-synchronized tau resets; 0 = use now_microsecs
+    double base_rtt = 0.0;      // windowed minimum RTT (sec); 0 = unknown
   };
 
   double raw_BUR(double D_sec, double Dmin_sec, const PudicaConfig &cfg);
@@ -76,7 +86,7 @@ namespace PudicaAlgorithm
     State current_state;
     double saved_rate;
     uint32_t frames_up;
-    uint32_t adj_after;
+    uint32_t adj_epoch;
     size_t history_size;
   };
 
@@ -95,15 +105,23 @@ namespace PudicaAlgorithm
     double saved_rate = 0.0;
 
     // MI / AI-MD scheduling
-    uint64_t last_reset = 0; // timestamp of last frames_up reset (microsecs)
-    uint32_t frames_up = 0;  // frames since last reset / congestion
-    uint32_t adj_after = 0;  // hold off MI/AI-MD until fid > adj_after
+    uint64_t reset_slot = UINT64_MAX; // 5 s wall-clock slot of the last periodic tau reset
+    uint32_t frames_up = 0;  // tau: frames since last reset / congestion
+    // Every rate decision opens a new epoch; the next MI/AI-MD step waits for
+    // feedback from a frame encoded in it (sec 4.2: postpone until feedback).
+    uint32_t rate_epoch = 0, adj_epoch = 0;
+    double onset_recv_sum = 0.0; // receive rates since the current congestion onset
+    uint32_t onset_recv_n = 0;
+    uint64_t last_loss_backoff = 0;
 
     // Shallow-buffer CUBIC-like rate ceiling
     double cubic_rate;               // ceiling imposed by shallow-buffer detection
     bool shallow_congestion = false; // currently in shallow-buffer mode
     uint64_t shallow_entered_at = 0; // timestamp when shallow mode started
-    bool loss_triggered = false;     // set by on_frame_loss()
+    uint32_t congested_samples = 0, last_sample_id = 0;
+    struct LossSample { double queue, frame_mbps, ack_bytes; uint64_t ack_first_us, ack_last_us; };
+    std::deque<LossSample> loss_samples;
+    bool fallback_pending = false;
     double cubic_B_agg = 0.0;
     double cubic_B_safe = 0.0;
 
@@ -126,10 +144,14 @@ namespace PudicaAlgorithm
     void clear_history() { history.clear(); }
     void check_shallow_congestion(const FrameAck &fa, double bur_corr);
     double get_final_bitrate() const;
-    control_output on_retrans_loss_detected();
+    double take_encoding_bitrate();
+    uint32_t encoding_epoch() const { return rate_epoch; }
+    void on_retrans_loss_detected();
     void force_drain();
     control_output on_frame_acked(const FrameAck &fa);
-    void on_frame_loss();
-    control_output on_inflight_age(uint64_t age);
+    // Halve once per loss event: expirations within min_gap_us of the last backoff are ignored.
+    void on_frame_loss(uint64_t now_us = 0, uint64_t min_gap_us = 0);
+    // age: time since the oldest undelivered frame started sending; base_rtt: windowed min RTT (us)
+    control_output on_inflight_age(uint64_t age, uint64_t base_rtt = 0);
   };
 }

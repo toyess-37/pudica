@@ -1,25 +1,35 @@
-import sys
+import argparse
+import os
+import tempfile
+from pathlib import Path
 
-# 300 Mbps ceiling (MAX_PACKETS_PER_MS = 25)
-MAX_PACKETS_PER_MS = 25 
+def convert(input_path, output_path, max_packets_per_ms=None):
+    source=Path(input_path);destination=Path(output_path)
+    if source.resolve()==destination.resolve():raise ValueError("input and output must differ")
+    if max_packets_per_ms is not None and max_packets_per_ms<=0:raise ValueError("cap must be positive")
+    clipped=0;last=-1
+    descriptor,temp=tempfile.mkstemp(prefix=destination.name+".",dir=destination.parent)
+    try:
+        with os.fdopen(descriptor,"w") as output,open(source) as rows:
+            for number,line in enumerate(rows,1):
+                if not line.strip() or line.lstrip().startswith("#"):continue
+                parts=line.replace(","," ").split()
+                if len(parts)!=2:raise ValueError(f"line {number}: expected timestamp,count")
+                timestamp,count=map(int,parts)
+                if timestamp<last or timestamp<0 or count<0:
+                    raise ValueError(f"line {number}: invalid timestamp/count")
+                last=timestamp
+                selected=count if max_packets_per_ms is None else min(count,max_packets_per_ms)
+                clipped+=count-selected
+                for _ in range(selected):output.write(f"{timestamp}\n")
+        os.replace(temp,destination)
+    finally:
+        if os.path.exists(temp):os.unlink(temp)
+    return clipped
 
-def convert(input, output):
-  with open(input, 'r') as inp, open(output, 'w') as out:
-    for line in inp:
-      parts = line.strip().split()
-      if len(parts) == 2:
-        timestamp = parts[0]
-        num = int(parts[1])
-      
-        mini = min(num, MAX_PACKETS_PER_MS)
-        for _ in range(mini):
-          out.write(f"{timestamp}\n")
-
-if __name__ == "__main__":
-  # python3 convert.py <FILENAME>.csv <FILENAME>.up
-  if len(sys.argv) != 3:
-    print("Usage: python convert.py <input_zeus> <output_up>")
-    sys.exit(1)
-    
-  convert(sys.argv[1], sys.argv[2])
-  print(f"Conversion complete.")
+if __name__=="__main__":
+    parser=argparse.ArgumentParser(description="Convert Zeus timestamp,count rows to a mahimahi trace.")
+    parser.add_argument("input");parser.add_argument("output")
+    parser.add_argument("--max-packets-per-ms",type=int,default=None,help="optional explicit capacity cap")
+    args=parser.parse_args()
+    print(f"Converted; clipped packets: {convert(args.input,args.output,args.max_packets_per_ms)}")
